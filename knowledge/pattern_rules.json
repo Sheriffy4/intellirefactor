@@ -1,0 +1,137 @@
+{
+  "patterns": [
+    {
+      "id": "large_method_extraction",
+      "description": "Large method that should be extracted to separate class",
+      "conditions": {
+        "method_lines": {"gt": 50},
+        "cyclomatic_complexity": {"gt": 10},
+        "method_dependencies": {"lt": 5}
+      },
+      "recommend": [
+        {
+          "intent": "extract_method_to_class",
+          "weight": 0.9
+        },
+        {
+          "intent": "create_interface",
+          "weight": 0.8
+        }
+      ],
+      "tweaks": {
+        "interface_naming": "I{MethodName}Service",
+        "class_naming": "{MethodName}Service"
+      },
+      "metadata": {
+        "success_count": 0,
+        "failure_count": 0,
+        "confidence": 0.8,
+        "created_at": "2024-01-01T00:00:00Z"
+      }
+    },
+    {
+      "id": "god_class_decomposition",
+      "description": "Large class with multiple responsibilities",
+      "conditions": {
+        "class_lines": {"gt": 500},
+        "method_count": {"gt": 20},
+        "responsibility_count": {"gt": 3}
+      },
+      "recommend": [
+        {
+          "intent": "split_by_responsibility",
+          "weight": 0.95
+        },
+        {
+          "intent": "create_facade",
+          "weight": 0.8
+        },
+        {
+          "intent": "introduce_dependency_injection",
+          "weight": 0.9
+        }
+      ],
+      "tweaks": {
+        "max_methods_per_class": 15,
+        "preserve_public_api": true
+      },
+      "metadata": {
+        "success_count": 0,
+        "failure_count": 0,
+        "confidence": 0.85,
+        "created_at": "2024-01-01T00:00:00Z"
+      }
+    },
+    {
+      "id": "tight_coupling_reduction",
+      "description": "Classes with high coupling that need interface extraction",
+      "conditions": {
+        "coupling_score": {"gt": 0.7},
+        "direct_dependencies": {"gt": 5},
+        "concrete_dependencies": {"gt": 3}
+      },
+      "recommend": [
+        {
+          "intent": "extract_interfaces",
+          "weight": 0.9
+        },
+        {
+          "intent": "dependency_injection",
+          "weight": 0.85
+        }
+      ],
+      "tweaks": {
+        "interface_segregation": true,
+        "single_responsibility": true
+      },
+      "metadata": {
+        "success_count": 0,
+        "failure_count": 0,
+        "confidence": 0.8,
+        "created_at": "2024-01-01T00:00:00Z"
+      }
+    },
+    {
+      "id": "configuration_complexity",
+      "description": "Complex configuration class that should be split",
+      "conditions": {
+        "config_fields": {"gt": 20},
+        "config_domains": {"gt": 3},
+        "validation_complexity": {"gt": 0.6}
+      },
+      "recommend": [
+        {
+          "intent": "split_configuration",
+          "weight": 0.9
+        },
+        {
+          "intent": "domain_specific_configs",
+          "weight": 0.85
+        }
+      ],
+      "tweaks": {
+        "preserve_backward_compatibility": true,
+        "use_composition": true
+      },
+      "metadata": {
+        "success_count": 0,
+        "failure_count": 0,
+        "confidence": 0.85,
+        "created_at": "2024-01-01T00:00:00Z"
+      }
+    }
+  ],
+  "global_settings": {
+    "min_confidence_threshold": 0.7,
+    "max_patterns_per_match": 3,
+    "pattern_ttl_days": 30,
+    "auto_prune_low_confidence": true,
+    "version": "1.0",
+    "last_updated": "2024-01-01T00:00:00Z"
+  },
+  "batch_info": {
+    "last_save": "",
+    "pending_updates_processed": 0,
+    "total_updates": 0
+  }
+}

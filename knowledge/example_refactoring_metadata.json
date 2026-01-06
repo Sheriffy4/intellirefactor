@@ -1,0 +1,302 @@
+{
+  "project_id": "example-refactoring",
+  "project_name": "Example Project Refactoring",
+  "refactoring_date": "2024-01-01",
+  "transformation_rules": [
+    {
+      "rule_id": "extract_method_to_component",
+      "name": "Extract Method to Component Class",
+      "type": "extract_method_to_class",
+      "description": "Extract a method with its related state into a separate component class",
+      "source_pattern": "class\\s+(\\w+):\\s*.*?def\\s+(\\w+)\\(self[^)]*\\):\\s*(.*?)(?=def|\\Z)",
+      "target_pattern": "class {ComponentName}({InterfaceName}):\n    def {method_name}(self{params}):\n        {body}",
+      "preconditions": [
+        "Method has clear single responsibility",
+        "Method uses subset of class instance variables",
+        "Method has low coupling with other methods",
+        "Method can be tested independently"
+      ],
+      "postconditions": [
+        "New component class created with single responsibility",
+        "Interface extracted for the component",
+        "Original class updated to use component via DI",
+        "Tests updated to test component independently"
+      ],
+      "required_imports": [
+        "from abc import ABC, abstractmethod",
+        "from typing import Protocol"
+      ],
+      "required_interfaces": [
+        "Component interface definition",
+        "Dependency injection container registration"
+      ],
+      "dependency_requirements": [
+        "Dependency injection container",
+        "Interface definitions",
+        "Component lifecycle management"
+      ],
+      "transformation_steps": [
+        "1. Identify method and its dependencies",
+        "2. Create interface for the component",
+        "3. Extract method to new component class",
+        "4. Update original class to use component via DI",
+        "5. Register component in DI container",
+        "6. Update tests"
+      ],
+      "code_examples": {
+        "before": "\nclass LargeService:\n    def complex_operation(self, data):\n        # Complex operation logic\n        result = []\n        # ... 200 lines of code\n        return result\n",
+        "after": "\nclass IComplexOperationService(Protocol):\n    def complex_operation(self, data: Any) -> List[Any]:\n        pass\n\nclass ComplexOperationService(IComplexOperationService):\n    def complex_operation(self, data: Any) -> List[Any]:\n        # Complex operation logic\n        result = []\n        # ... 200 lines of code\n        return result\n\nclass LargeService:\n    def __init__(self, operation_service: IComplexOperationService):\n        self.operation_service = operation_service\n        \n    def complex_operation(self, data):\n        return self.operation_service.complex_operation(data)\n"
+      },
+      "complexity_impact": -0.7,
+      "coupling_impact": -0.5,
+      "cohesion_impact": 0.8,
+      "automation_confidence": 0.8,
+      "manual_review_required": true,
+      "risk_level": "medium",
+      "applied_count": 0,
+      "success_rate": 0.0,
+      "common_failure_modes": [
+        "Incorrect dependency identification",
+        "Missing interface methods",
+        "Circular dependency creation"
+      ]
+    }
+  ],
+  "di_patterns": [
+    {
+      "pattern_id": "constructor_injection_pattern",
+      "name": "Constructor Injection with Interfaces",
+      "type": "constructor_injection",
+      "description": "Inject dependencies through constructor using interface types",
+      "interface_template": "\nfrom typing import Protocol\n\nclass I{ServiceName}(Protocol):\n    def {method_name}(self, {parameters}) -> {return_type}:\n        '''Interface method documentation.'''\n        pass\n",
+      "implementation_template": "\nclass {ServiceName}(I{ServiceName}):\n    def __init__(self, {dependencies}):\n        {dependency_assignments}\n        \n    def {method_name}(self, {parameters}) -> {return_type}:\n        '''Implementation of interface method.'''\n        {implementation}\n",
+      "registration_template": "\n# In DI container configuration\ncontainer.register_singleton(I{ServiceName}, {ServiceName})\ncontainer.register_transient(I{DependencyName}, {DependencyName})\n",
+      "usage_template": "\nclass {ClientClass}:\n    def __init__(self, {service_name}: I{ServiceName}):\n        self.{service_name} = {service_name}\n        \n    def {client_method}(self):\n        return self.{service_name}.{method_name}({arguments})\n",
+      "container_configuration": {
+        "singleton_services": [],
+        "transient_components": [],
+        "factory_services": []
+      },
+      "lifecycle_management": "mixed",
+      "testability_improvement": 0.8,
+      "coupling_reduction": 0.7,
+      "flexibility_increase": 0.9,
+      "implementation_steps": [
+        "1. Define interface with Protocol or ABC",
+        "2. Implement concrete class with interface",
+        "3. Update constructor to accept interface type",
+        "4. Register in DI container with appropriate lifecycle",
+        "5. Update all creation sites to use container",
+        "6. Create test utilities for easy mocking"
+      ],
+      "best_practices": [
+        "Use Protocol for structural typing when possible",
+        "Keep interfaces focused and cohesive",
+        "Avoid circular dependencies",
+        "Use factory pattern for complex object creation",
+        "Register interfaces, not concrete types",
+        "Use appropriate lifecycle management"
+      ],
+      "common_pitfalls": [
+        "Creating interfaces that are too broad",
+        "Circular dependency issues",
+        "Incorrect lifecycle management",
+        "Missing interface registrations",
+        "Over-engineering simple dependencies"
+      ],
+      "can_auto_generate": true,
+      "generation_confidence": 0.85,
+      "manual_verification_points": [
+        "Interface method signatures are correct",
+        "Lifecycle management is appropriate",
+        "No circular dependencies created",
+        "All registrations are present"
+      ]
+    }
+  ],
+  "interface_templates": [
+    {
+      "template_id": "service_interface_extraction",
+      "name": "Service Interface Extraction",
+      "description": "Extract interface from service class with multiple public methods",
+      "method_analysis_rules": [
+        "Include all public methods",
+        "Exclude private and protected methods",
+        "Include methods with clear business purpose",
+        "Exclude infrastructure/utility methods unless they're part of the contract"
+      ],
+      "dependency_analysis_rules": [
+        "Analyze method parameters for interface types",
+        "Identify return types that should be interfaces",
+        "Check for dependencies that should be injected",
+        "Validate no concrete type leakage in interface"
+      ],
+      "cohesion_analysis_rules": [
+        "Methods should serve related purposes",
+        "Interface should have single responsibility",
+        "Methods should operate at same abstraction level",
+        "Avoid mixing different concerns in same interface"
+      ],
+      "interface_naming_pattern": "I{ServiceName}",
+      "method_signature_template": "\ndef {method_name}(self, {parameters}) -> {return_type}:\n    '''\n    {method_description}\n    \n    Args:\n        {parameter_docs}\n        \n    Returns:\n        {return_description}\n        \n    Raises:\n        {exception_docs}\n    '''\n    pass\n",
+      "documentation_template": "\nclass I{ServiceName}(Protocol):\n    '''\n    Interface for {service_description}.\n    \n    This interface defines the contract for {service_purpose}.\n    Implementations should {implementation_guidance}.\n    '''\n",
+      "interface_quality_metrics": [
+        "Interface Segregation Principle compliance",
+        "Method cohesion score",
+        "Dependency direction correctness",
+        "Documentation completeness"
+      ],
+      "segregation_principles": [
+        "No client should depend on methods it doesn't use",
+        "Prefer multiple specific interfaces over one general interface",
+        "Group related methods that change together",
+        "Separate read and write operations when appropriate"
+      ],
+      "extraction_confidence": 0.8,
+      "requires_human_review": true,
+      "validation_steps": [
+        "Verify all public methods are included",
+        "Check method signatures are correct",
+        "Validate documentation is complete",
+        "Ensure no concrete type leakage",
+        "Confirm interface segregation principles"
+      ]
+    }
+  ],
+  "testing_strategies": [
+    {
+      "strategy_id": "component_property_testing",
+      "name": "Component Property-Based Testing",
+      "type": "property_based_testing",
+      "description": "Property-based testing strategy for refactored components",
+      "test_file_template": "\nimport pytest\nfrom hypothesis import given, strategies as st\nfrom {module_path} import {ComponentClass}, I{ComponentClass}\n\nclass Test{ComponentClass}Properties:\n    '''Property-based tests for {ComponentClass}.'''\n    \n    def setup_method(self):\n        '''Set up test fixtures.'''\n        {setup_code}\n        \n    {test_methods}\n",
+      "test_method_template": "\n@given({generators})\ndef test_{property_name}(self, {parameters}):\n    '''\n    **Property {property_number}: {property_description}**\n    **Validates: Requirements {requirements}**\n    '''\n    # Arrange\n    {arrange_code}\n    \n    # Act\n    {act_code}\n    \n    # Assert\n    {assert_code}\n",
+      "setup_template": "\nself.{component_name} = {ComponentClass}({dependencies})\nself.mock_{dependency} = Mock(spec=I{DependencyClass})\n",
+      "teardown_template": "\n# Clean up any resources\n{cleanup_code}\n",
+      "test_patterns": [
+        "Round-trip properties for serialization/deserialization",
+        "Invariant preservation properties",
+        "Idempotence properties",
+        "Metamorphic properties",
+        "Error condition properties"
+      ],
+      "assertion_patterns": [
+        "assert result is not None",
+        "assert len(result) > 0",
+        "assert all(condition for item in result)",
+        "assert result.property == expected_value",
+        "assert_that(result, has_properties(expected_properties))"
+      ],
+      "mock_patterns": [
+        "mock_{dependency}.{method}.return_value = {value}",
+        "mock_{dependency}.{method}.side_effect = {exception}",
+        "assert mock_{dependency}.{method}.called_once_with({args})"
+      ],
+      "coverage_expectations": 0.9,
+      "test_quality_metrics": [
+        "Property coverage completeness",
+        "Generator quality and diversity",
+        "Assertion strength and specificity",
+        "Error condition coverage"
+      ],
+      "can_auto_generate": true,
+      "generation_accuracy": 0.75,
+      "human_review_required": true,
+      "property_templates": [
+        "For any {input_type}, {operation} should {expected_behavior}",
+        "For all valid {input_type}, {operation} then {inverse_operation} should return original",
+        "For any {input_type}, applying {operation} twice should equal applying it once",
+        "For any {input_type}, {operation} should preserve {invariant}"
+      ],
+      "generator_templates": [
+        "st.text(min_size=1, max_size=100)",
+        "st.integers(min_value=1, max_value=1000)",
+        "st.lists(st.text(), min_size=0, max_size=10)",
+        "st.dictionaries(st.text(), st.text(), min_size=0, max_size=5)"
+      ],
+      "invariant_patterns": [
+        "len(result) >= 0",
+        "result.start_time <= result.end_time",
+        "all(item.is_valid() for item in result)",
+        "result.total == sum(item.value for item in result.items)"
+      ]
+    },
+    {
+      "strategy_id": "component_unit_testing",
+      "name": "Component Unit Testing",
+      "type": "unit_testing",
+      "description": "Unit testing strategy for individual refactored components",
+      "test_file_template": "\nimport pytest\nfrom unittest.mock import Mock, patch\nfrom {module_path} import {ComponentClass}\n\nclass Test{ComponentClass}:\n    '''Unit tests for {ComponentClass}.'''\n    \n    def setup_method(self):\n        '''Set up test fixtures.'''\n        {setup_code}\n        \n    {test_methods}\n",
+      "test_method_template": "\ndef test_{method_name}_{scenario}(self):\n    '''Test {method_name} when {scenario}.'''\n    # Arrange\n    {arrange_code}\n    \n    # Act\n    {act_code}\n    \n    # Assert\n    {assert_code}\n",
+      "setup_template": "\nself.mock_{dependency} = Mock(spec=I{DependencyClass})\nself.{component_name} = {ComponentClass}(self.mock_{dependency})\n",
+      "teardown_template": "# No teardown needed for unit tests",
+      "test_patterns": [
+        "Happy path scenarios",
+        "Edge cases and boundary conditions",
+        "Error conditions and exception handling",
+        "Dependency interaction verification",
+        "State change validation"
+      ],
+      "assertion_patterns": [
+        "assert result == expected",
+        "assert result is not None",
+        "assert len(result) == expected_count",
+        "assert mock.called_once_with(expected_args)",
+        "with pytest.raises(ExpectedException):"
+      ],
+      "mock_patterns": [
+        "Mock(spec=IInterface)",
+        "mock.method.return_value = value",
+        "mock.method.side_effect = exception",
+        "assert mock.method.call_count == expected"
+      ],
+      "coverage_expectations": 0.85,
+      "test_quality_metrics": [
+        "Branch coverage percentage",
+        "Edge case coverage",
+        "Error condition coverage",
+        "Mock usage appropriateness"
+      ],
+      "can_auto_generate": true,
+      "generation_accuracy": 0.8,
+      "human_review_required": false,
+      "property_templates": [],
+      "generator_templates": [],
+      "invariant_patterns": []
+    }
+  ],
+  "overall_success_metrics": {
+    "complexity_reduction": 0.0,
+    "coupling_reduction": 0.0,
+    "cohesion_improvement": 0.0,
+    "testability_improvement": 0.0,
+    "maintainability_improvement": 0.0,
+    "test_coverage_improvement": 0.0,
+    "file_count_increase": 0.0,
+    "lines_per_file_reduction": 0.0,
+    "interface_extraction_success": 0.0,
+    "backward_compatibility_maintained": 0.0,
+    "performance_impact": 0.0,
+    "automation_rule_extraction": 0.0
+  },
+  "automation_potential_score": 0.8,
+  "reusability_score": 0.85,
+  "related_patterns": [
+    "monolith_decomposition",
+    "facade_pattern",
+    "dependency_injection",
+    "layered_architecture"
+  ],
+  "applicable_contexts": [
+    "large_monolithic_classes",
+    "god_objects",
+    "tightly_coupled_systems",
+    "legacy_modernization"
+  ],
+  "contraindications": [
+    "small_simple_classes",
+    "performance_critical_tight_loops",
+    "stable_apis_without_clients"
+  ],
+  "export_timestamp": "2024-01-01T00:00:00.000000"
+}

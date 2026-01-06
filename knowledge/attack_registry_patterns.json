@@ -1,0 +1,198 @@
+{
+  "source": "attack-registry-refactoring spec",
+  "extraction_date": "2026-01-01",
+  "patterns": [
+    {
+      "name": "monolith_to_composition",
+      "description": "Разделение монолитного класса на специализированные компоненты с композицией",
+      "before_pattern": "Один большой класс (>3000 строк) с множественными ответственностями",
+      "after_pattern": "Главный класс + набор специализированных компонентов через композицию",
+      "conditions": [
+        "Класс превышает 3000 строк кода",
+        "Класс имеет множественные ответственности",
+        "Можно выделить четкие функциональные области"
+      ],
+      "confidence": 0.95,
+      "components_extracted": [
+        "RegistryConfig - конфигурация",
+        "AttackAliasManager - управление алиасами",
+        "AttackParameterValidator - валидация параметров",
+        "PriorityManager - управление приоритетами",
+        "LazyLoadingManager - отложенная загрузка",
+        "AttackHandlerFactory - создание обработчиков"
+      ],
+      "size_limits": {
+        "max_lines_per_component": 300,
+        "target_main_class_reduction": "80%"
+      }
+    },
+    {
+      "name": "factory_extraction",
+      "description": "Извлечение методов создания объектов в отдельную фабрику",
+      "before_pattern": "Множество методов _create_*_handler() в основном классе",
+      "after_pattern": "Отдельный AttackHandlerFactory класс с методами создания",
+      "conditions": [
+        "Есть множество методов создания с общим префиксом",
+        "Методы создания логически связаны",
+        "Можно выделить общий интерфейс создания"
+      ],
+      "confidence": 0.9,
+      "method_patterns": [
+        "_create_*_handler()",
+        "_build_*_object()",
+        "_make_*_instance()"
+      ]
+    },
+    {
+      "name": "state_manager_extraction",
+      "description": "Извлечение управления состоянием в отдельный менеджер",
+      "before_pattern": "Состояние и логика управления смешаны в основном классе",
+      "after_pattern": "Отдельные менеджеры для разных аспектов состояния",
+      "conditions": [
+        "Есть сложная логика управления состоянием",
+        "Состояние можно разделить на логические группы",
+        "Нужна изоляция для тестирования"
+      ],
+      "confidence": 0.85,
+      "manager_types": [
+        "AliasManager - управление алиасами",
+        "PriorityManager - управление приоритетами",
+        "LazyLoadingManager - управление загрузкой"
+      ]
+    },
+    {
+      "name": "validator_extraction",
+      "description": "Извлечение логики валидации в отдельный компонент",
+      "before_pattern": "Методы валидации разбросаны по основному классу",
+      "after_pattern": "Централизованный AttackParameterValidator",
+      "conditions": [
+        "Есть методы validate_* или _validate_*",
+        "Валидация имеет сложную логику",
+        "Нужна переиспользуемость валидации"
+      ],
+      "confidence": 0.88,
+      "validation_patterns": [
+        "validate_parameters()",
+        "_validate_*_values()",
+        "check_*_constraints()"
+      ]
+    },
+    {
+      "name": "configuration_layer",
+      "description": "Создание централизованного конфигурационного слоя",
+      "before_pattern": "Настройки разбросаны по коду как константы и переменные",
+      "after_pattern": "Централизованный RegistryConfig с типизированными настройками",
+      "conditions": [
+        "Много магических констант в коде",
+        "Настройки дублируются в разных местах",
+        "Нужна централизованная конфигурация"
+      ],
+      "confidence": 0.82,
+      "config_patterns": [
+        "@dataclass конфигурация",
+        "from_dict() и to_dict() методы",
+        "Валидация конфигурации"
+      ]
+    },
+    {
+      "name": "backward_compatibility_delegation",
+      "description": "Сохранение обратной совместимости через делегирование к новым компонентам",
+      "before_pattern": "Прямая реализация методов в монолитном классе",
+      "after_pattern": "Методы-делегаты, которые вызывают соответствующие компоненты",
+      "conditions": [
+        "Нужно сохранить существующий API",
+        "Есть внешние зависимости от класса",
+        "Рефакторинг должен быть прозрачным"
+      ],
+      "confidence": 0.92,
+      "delegation_patterns": [
+        "def get(self, key): return self.component.get_item(key)",
+        "def validate(self, data): return self.validator.validate(data)"
+      ]
+    }
+  ],
+  "automation_rules": {
+    "monolith_detection": {
+      "min_lines": 1000,
+      "max_methods": 50,
+      "responsibility_keywords": {
+        "config": [
+          "config",
+          "setting",
+          "option",
+          "parameter"
+        ],
+        "validation": [
+          "validate",
+          "check",
+          "verify",
+          "ensure"
+        ],
+        "factory": [
+          "create",
+          "build",
+          "make",
+          "generate"
+        ],
+        "manager": [
+          "manage",
+          "handle",
+          "process",
+          "control"
+        ],
+        "loader": [
+          "load",
+          "import",
+          "discover",
+          "fetch"
+        ]
+      }
+    },
+    "component_extraction_rules": {
+      "factory_methods": {
+        "patterns": [
+          "_create_.*",
+          "_build_.*",
+          "_make_.*"
+        ],
+        "min_methods": 3,
+        "target_class": "Factory"
+      },
+      "validation_methods": {
+        "patterns": [
+          "validate_.*",
+          "_validate_.*",
+          "check_.*"
+        ],
+        "min_methods": 2,
+        "target_class": "Validator"
+      },
+      "manager_methods": {
+        "patterns": [
+          "manage_.*",
+          "handle_.*",
+          "_handle_.*"
+        ],
+        "min_methods": 2,
+        "target_class": "Manager"
+      }
+    },
+    "composition_patterns": {
+      "dependency_injection": true,
+      "interface_segregation": true,
+      "single_responsibility": true,
+      "max_component_size": 300
+    },
+    "backward_compatibility": {
+      "preserve_public_api": true,
+      "create_delegation_methods": true,
+      "maintain_method_signatures": true
+    }
+  },
+  "metadata": {
+    "original_size": "3000+ lines",
+    "target_components": 6,
+    "confidence_threshold": 0.8,
+    "validation_method": "property_based_testing"
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "timestamp": "2025-12-23T12:30:17.478984",
+  "project_root": "C:\\Users\\admin\\Downloads\\zapretttt\\DPI_Blockcheck\\recon_v109\\recon_v09\\combo\\recon",
+  "stats": {
+    "garbage_files_found": 0,
+    "garbage_files_moved": 0,
+    "size_freed_bytes": 0,
+    "directories_analyzed": 177,
+    "entry_points_found": 4,
+    "config_files_found": 137,
+    "modules_analyzed": 929,
+    "categories_found": 0,
+    "documents_created": 3
+  },
+  "documents": {
+    "expected": 3,
+    "created": 3,
+    "details": {
+      "PROJECT_STRUCTURE.md": {
+        "exists": true,
+        "size": 81218,
+        "lines": 1712,
+        "created_time": "2025-12-23T12:30:03.722710"
+      },
+      "MODULE_REGISTRY.md": {
+        "exists": true,
+        "size": 309077,
+        "lines": 15170,
+        "created_time": "2025-12-23T12:29:52.509290"
+      },
+      "LLM_CONTEXT.md": {
+        "exists": true,
+        "size": 14815,
+        "lines": 399,
+        "created_time": "2025-12-23T12:30:13.775002"
+      }
+    }
+  },
+  "cleanup": {
+    "to_delete_exists": true,
+    "moved_files": 0,
+    "categories": {},
+    "total_size": 0
+  },
+  "validation": {},
+  "summary": {
+    "overall_success": true,
+    "completed_stages": [
+      "Очистка мусора",
+      "Создание документации",
+      "Анализ структуры проекта",
+      "Создание реестра модулей"
+    ],
+    "issues": [
+      "Файлы мусора не найдены или не перемещены"
+    ],
+    "recommendations": [
+      "Рассмотрите возможность разделения больших модулей",
+      "Возможно стоит пересмотреть категоризацию модулей"
+    ]
+  },
+  "structure": {
+    "exists": true,
+    "directories_documented": 177,
+    "entry_points_found": 4,
+    "config_files_found": 137
+  },
+  "registry": {
+    "exists": true,
+    "modules_documented": 929,
+    "categories_found": 0,
+    "categories": {}
+  }
+}

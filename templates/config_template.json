@@ -1,0 +1,59 @@
+{
+  "analysis": {
+    "max_file_size": 1048576,
+    "excluded_patterns": [
+      "*.pyc",
+      "__pycache__",
+      ".git",
+      ".venv",
+      "venv",
+      "node_modules",
+      "*.egg-info",
+      "build",
+      "dist",
+      ".pytest_cache",
+      ".coverage",
+      "htmlcov"
+    ],
+    "metrics_thresholds": {
+      "cyclomatic_complexity": 10.0,
+      "maintainability_index": 20.0,
+      "lines_of_code": 500
+    },
+    "analysis_depth": 10,
+    "include_patterns": ["**/*.py"],
+    "exclude_patterns": [
+      "**/test_*.py",
+      "**/*_test.py",
+      "**/__pycache__/**",
+      "**/.*",
+      "**/build/**",
+      "**/dist/**"
+    ],
+    "large_file_threshold": 500,
+    "complexity_threshold": 15.0,
+    "responsibilities_threshold": 5,
+    "god_object_threshold": 15,
+    "min_candidate_size": 100,
+    "max_candidates": 10
+  },
+  "refactoring": {
+    "safety_level": "moderate",
+    "auto_apply": false,
+    "backup_enabled": true,
+    "validation_required": true,
+    "max_operations_per_session": 50,
+    "stop_on_failure": true
+  },
+  "knowledge": {
+    "knowledge_base_path": "knowledge",
+    "auto_learn": true,
+    "confidence_threshold": 0.7,
+    "max_knowledge_items": 10000
+  },
+  "plugins": {
+    "plugin_directories": ["plugins"],
+    "auto_discover": true,
+    "enabled_plugins": []
+  }
+}

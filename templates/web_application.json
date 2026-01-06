@@ -1,0 +1,68 @@
+{
+  "_description": "Configuration template for web applications (Django, Flask, FastAPI)",
+  "analysis": {
+    "max_file_size": 2097152,
+    "excluded_patterns": [
+      "*.pyc",
+      "__pycache__",
+      ".git",
+      ".venv",
+      "venv",
+      "node_modules",
+      "*.egg-info",
+      "build",
+      "dist",
+      ".pytest_cache",
+      ".coverage",
+      "htmlcov",
+      "static/",
+      "media/",
+      "migrations/",
+      "locale/"
+    ],
+    "metrics_thresholds": {
+      "cyclomatic_complexity": 8.0,
+      "maintainability_index": 25.0,
+      "lines_of_code": 300
+    },
+    "analysis_depth": 15,
+    "include_patterns": ["**/*.py"],
+    "exclude_patterns": [
+      "**/test_*.py",
+      "**/*_test.py",
+      "**/tests/**",
+      "**/__pycache__/**",
+      "**/.*",
+      "**/build/**",
+      "**/dist/**",
+      "**/migrations/**",
+      "**/static/**",
+      "**/media/**"
+    ],
+    "large_file_threshold": 300,
+    "complexity_threshold": 12.0,
+    "responsibilities_threshold": 4,
+    "god_object_threshold": 12,
+    "min_candidate_size": 80,
+    "max_candidates": 15
+  },
+  "refactoring": {
+    "safety_level": "conservative",
+    "auto_apply": false,
+    "backup_enabled": true,
+    "validation_required": true,
+    "max_operations_per_session": 30,
+    "stop_on_failure": true
+  },
+  "knowledge": {
+    "knowledge_base_path": "knowledge",
+    "auto_learn": true,
+    "confidence_threshold": 0.8,
+    "max_knowledge_items": 15000
+  },
+  "plugins": {
+    "plugin_directories": ["plugins", "web_plugins"],
+    "auto_discover": true,
+    "enabled_plugins": ["django_analyzer", "flask_analyzer", "fastapi_analyzer"]
+  }
+}

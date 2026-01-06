@@ -1,0 +1,75 @@
+{
+  "patterns": {
+    "attack_registry_monolith_to_composition": {
+      "name": "monolith_to_composition",
+      "description": "Разделение монолитного класса на специализированные компоненты с композицией",
+      "confidence": 0.95,
+      "source": "attack-registry-refactoring",
+      "applicable_to": [
+        "monolithic_classes",
+        "large_registries",
+        "factory_patterns"
+      ]
+    },
+    "attack_registry_factory_extraction": {
+      "name": "factory_extraction",
+      "description": "Извлечение методов создания объектов в отдельную фабрику",
+      "confidence": 0.9,
+      "source": "attack-registry-refactoring",
+      "applicable_to": [
+        "monolithic_classes",
+        "large_registries",
+        "factory_patterns"
+      ]
+    },
+    "attack_registry_state_manager_extraction": {
+      "name": "state_manager_extraction",
+      "description": "Извлечение управления состоянием в отдельный менеджер",
+      "confidence": 0.85,
+      "source": "attack-registry-refactoring",
+      "applicable_to": [
+        "monolithic_classes",
+        "large_registries",
+        "factory_patterns"
+      ]
+    },
+    "attack_registry_validator_extraction": {
+      "name": "validator_extraction",
+      "description": "Извлечение логики валидации в отдельный компонент",
+      "confidence": 0.88,
+      "source": "attack-registry-refactoring",
+      "applicable_to": [
+        "monolithic_classes",
+        "large_registries",
+        "factory_patterns"
+      ]
+    },
+    "attack_registry_configuration_layer": {
+      "name": "configuration_layer",
+      "description": "Создание централизованного конфигурационного слоя",
+      "confidence": 0.82,
+      "source": "attack-registry-refactoring",
+      "applicable_to": [
+        "monolithic_classes",
+        "large_registries",
+        "factory_patterns"
+      ]
+    },
+    "attack_registry_backward_compatibility_delegation": {
+      "name": "backward_compatibility_delegation",
+      "description": "Сохранение обратной совместимости через делегирование к новым компонентам",
+      "confidence": 0.92,
+      "source": "attack-registry-refactoring",
+      "applicable_to": [
+        "monolithic_classes",
+        "large_registries",
+        "factory_patterns"
+      ]
+    }
+  },
+  "sources": [
+    "attack-registry-refactoring"
+  ],
+  "last_updated": "2026-01-01T18:00:00Z",
+  "total_patterns": 6
+}

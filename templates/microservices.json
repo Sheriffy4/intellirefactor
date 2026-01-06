@@ -1,0 +1,69 @@
+{
+  "_description": "Configuration template for microservices architecture",
+  "analysis": {
+    "max_file_size": 1048576,
+    "excluded_patterns": [
+      "*.pyc",
+      "__pycache__",
+      ".git",
+      ".venv",
+      "venv",
+      "node_modules",
+      "*.egg-info",
+      "build",
+      "dist",
+      ".pytest_cache",
+      ".coverage",
+      "htmlcov",
+      "docker/",
+      "k8s/",
+      "helm/",
+      "terraform/"
+    ],
+    "metrics_thresholds": {
+      "cyclomatic_complexity": 7.0,
+      "maintainability_index": 28.0,
+      "lines_of_code": 200
+    },
+    "analysis_depth": 10,
+    "include_patterns": ["**/*.py"],
+    "exclude_patterns": [
+      "**/test_*.py",
+      "**/*_test.py",
+      "**/tests/**",
+      "**/__pycache__/**",
+      "**/.*",
+      "**/build/**",
+      "**/dist/**",
+      "**/docker/**",
+      "**/k8s/**",
+      "**/helm/**",
+      "**/terraform/**"
+    ],
+    "large_file_threshold": 200,
+    "complexity_threshold": 10.0,
+    "responsibilities_threshold": 2,
+    "god_object_threshold": 8,
+    "min_candidate_size": 40,
+    "max_candidates": 15
+  },
+  "refactoring": {
+    "safety_level": "moderate",
+    "auto_apply": false,
+    "backup_enabled": true,
+    "validation_required": true,
+    "max_operations_per_session": 35,
+    "stop_on_failure": true
+  },
+  "knowledge": {
+    "knowledge_base_path": "knowledge",
+    "auto_learn": true,
+    "confidence_threshold": 0.75,
+    "max_knowledge_items": 10000
+  },
+  "plugins": {
+    "plugin_directories": ["plugins", "microservices_plugins"],
+    "auto_discover": true,
+    "enabled_plugins": ["service_analyzer", "api_gateway_analyzer", "container_analyzer"]
+  }
+}

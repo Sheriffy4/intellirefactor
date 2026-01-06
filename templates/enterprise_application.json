@@ -1,0 +1,69 @@
+{
+  "_description": "Configuration template for large enterprise applications",
+  "analysis": {
+    "max_file_size": 3145728,
+    "excluded_patterns": [
+      "*.pyc",
+      "__pycache__",
+      ".git",
+      ".venv",
+      "venv",
+      "node_modules",
+      "*.egg-info",
+      "build",
+      "dist",
+      ".pytest_cache",
+      ".coverage",
+      "htmlcov",
+      "logs/",
+      "tmp/",
+      "cache/",
+      "vendor/"
+    ],
+    "metrics_thresholds": {
+      "cyclomatic_complexity": 6.0,
+      "maintainability_index": 35.0,
+      "lines_of_code": 250
+    },
+    "analysis_depth": 20,
+    "include_patterns": ["**/*.py"],
+    "exclude_patterns": [
+      "**/test_*.py",
+      "**/*_test.py",
+      "**/tests/**",
+      "**/__pycache__/**",
+      "**/.*",
+      "**/build/**",
+      "**/dist/**",
+      "**/logs/**",
+      "**/tmp/**",
+      "**/cache/**",
+      "**/vendor/**"
+    ],
+    "large_file_threshold": 250,
+    "complexity_threshold": 8.0,
+    "responsibilities_threshold": 3,
+    "god_object_threshold": 8,
+    "min_candidate_size": 50,
+    "max_candidates": 20
+  },
+  "refactoring": {
+    "safety_level": "conservative",
+    "auto_apply": false,
+    "backup_enabled": true,
+    "validation_required": true,
+    "max_operations_per_session": 20,
+    "stop_on_failure": true
+  },
+  "knowledge": {
+    "knowledge_base_path": "knowledge",
+    "auto_learn": true,
+    "confidence_threshold": 0.9,
+    "max_knowledge_items": 20000
+  },
+  "plugins": {
+    "plugin_directories": ["plugins", "enterprise_plugins"],
+    "auto_discover": true,
+    "enabled_plugins": ["architecture_analyzer", "security_analyzer", "performance_analyzer"]
+  }
+}

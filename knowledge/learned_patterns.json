@@ -1,0 +1,157 @@
+{
+  "patterns": [
+    {
+      "name": "fallback_import_core_adaptive_refactored_facade",
+      "description": "Add fallback import for core.adaptive_refactored.facade",
+      "pattern_type": "import_fix",
+      "before_regex": "from core\\.adaptive_refactored\\.facade import AdaptiveEngine",
+      "after_template": "# Import fallbacks for missing modules\ntry:\n    from core.adaptive_refactored.facade import AdaptiveEngine\n    ADAPTIVE_ENGINE_AVAILABLE = True\nexcept ImportError:\n    ADAPTIVE_ENGINE_AVAILABLE = False\n    # Add fallback classes/functions here",
+      "confidence": 0.95,
+      "usage_count": 0,
+      "success_rate": 1.0,
+      "conditions": [
+        "Module core.adaptive_refactored.facade does not exist in codebase"
+      ],
+      "examples": [
+        {
+          "before": "from core.adaptive_refactored.facade import AdaptiveEngine",
+          "after": "try:\n    from core.adaptive_refactored.facade import AdaptiveEngine\nexcept ImportError:\n    pass"
+        },
+        {
+          "before": "from core.adaptive_refactored.facade import AdaptiveEngine",
+          "after": "try:\n    from core.adaptive_refactored.facade import AdaptiveEngine\nexcept ImportError:\n    pass"
+        }
+      ]
+    },
+    {
+      "name": "standardize_logging_variable",
+      "description": "Standardize logging variable from LOG to logger",
+      "pattern_type": "logging_fix",
+      "before_regex": "LOG = logging\\.getLogger",
+      "after_template": "logger = logging.getLogger",
+      "confidence": 0.85,
+      "usage_count": 0,
+      "success_rate": 1.0,
+      "conditions": [
+        "Codebase primarily uses 'logger' variable"
+      ],
+      "examples": [
+        {
+          "before": "LOG = logging.getLogger(__name__)",
+          "after": "logger = logging.getLogger(__name__)"
+        },
+        {
+          "before": "LOG = logging.getLogger(__name__)",
+          "after": "logger = logging.getLogger(__name__)"
+        },
+        {
+          "before": "LOG = logging.getLogger(__name__)",
+          "after": "logger = logging.getLogger(__name__)"
+        },
+        {
+          "before": "LOG = logging.getLogger(__name__)",
+          "after": "logger = logging.getLogger(__name__)"
+        }
+      ]
+    },
+    {
+      "name": "replace_log_usage",
+      "description": "Replace LOG usage with logger",
+      "pattern_type": "logging_fix",
+      "before_regex": "LOG\\.",
+      "after_template": "logger.",
+      "confidence": 0.85,
+      "usage_count": 0,
+      "success_rate": 1.0,
+      "conditions": [
+        "LOG variable was replaced with logger"
+      ],
+      "examples": [
+        {
+          "before": "LOG.info('message')",
+          "after": "logger.info('message')"
+        },
+        {
+          "before": "LOG.info('message')",
+          "after": "logger.info('message')"
+        },
+        {
+          "before": "LOG.info('message')",
+          "after": "logger.info('message')"
+        },
+        {
+          "before": "LOG.info('message')",
+          "after": "logger.info('message')"
+        }
+      ]
+    },
+    {
+      "name": "add_owner_proxy_mixin",
+      "description": "Add OwnerProxyMixin for state delegation",
+      "pattern_type": "structural_pattern",
+      "before_regex": "class (\\w+):",
+      "after_template": "class \\1(OwnerProxyMixin):",
+      "confidence": 0.8,
+      "usage_count": 0,
+      "success_rate": 1.0,
+      "conditions": [
+        "Component needs access to facade state"
+      ],
+      "examples": [
+        {
+          "before": "class AnalysisService:",
+          "after": "class AnalysisService(OwnerProxyMixin):"
+        }
+      ]
+    }
+  ],
+  "codebase_standards": {
+    "logging_variable": "logger",
+    "import_style": "absolute",
+    "error_handling_pattern": "try_except_fallback",
+    "preferred_modules": [],
+    "deprecated_modules": [],
+    "common_fallbacks": {}
+  },
+  "learning_history": [
+    {
+      "timestamp": "2026-01-01T18:44:16.909679",
+      "original_file": "core\\cli_payload\\adaptive_cli_wrapper.py",
+      "corrected_files": [
+        "core\\cli_payload\\components_new\\analysis_service.py",
+        "core\\cli_payload\\components_new\\discovery_service.py",
+        "core\\cli_payload\\components_new\\base.py",
+        "core\\cli_payload\\components_new\\container.py",
+        "core\\cli_payload\\components_new\\interfaces.py",
+        "core\\cli_payload\\components_new\\__init__.py"
+      ],
+      "description": "Manual fixes for import errors and logging standardization in adaptive_cli_wrapper refactoring",
+      "patterns_extracted": 6,
+      "pattern_names": [
+        "fallback_import_core_adaptive_refactored_facade",
+        "standardize_logging_variable",
+        "replace_log_usage",
+        "standardize_logging_variable",
+        "replace_log_usage",
+        "add_owner_proxy_mixin"
+      ]
+    },
+    {
+      "timestamp": "2026-01-01T18:44:43.067826",
+      "original_file": "core\\cli_payload\\adaptive_cli_wrapper.py",
+      "corrected_files": [
+        "core\\cli_payload\\components_new\\analysis_service.py",
+        "core\\cli_payload\\components_new\\discovery_service.py"
+      ],
+      "description": "Import fixes and logging standardization from manual refactoring",
+      "patterns_extracted": 5,
+      "pattern_names": [
+        "fallback_import_core_adaptive_refactored_facade",
+        "standardize_logging_variable",
+        "replace_log_usage",
+        "standardize_logging_variable",
+        "replace_log_usage"
+      ]
+    }
+  ]
+}

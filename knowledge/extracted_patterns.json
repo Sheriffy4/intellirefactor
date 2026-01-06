@@ -1,0 +1,74 @@
+{
+  "patterns": [
+    {
+      "name": "service_extraction",
+      "description": "Extract semantic groups of methods into separate service classes",
+      "before_pattern": "Large monolithic class with mixed responsibilities",
+      "after_pattern": "Multiple focused service classes with single responsibility",
+      "conditions": [
+        "Class has more than 50 methods",
+        "Methods can be grouped by semantic similarity",
+        "Class has multiple distinct responsibilities"
+      ],
+      "confidence": 0.9
+    },
+    {
+      "name": "import_fixing",
+      "description": "Automatically fix non-existent imports and add fallbacks",
+      "before_pattern": "from core.cli.* import ...",
+      "after_pattern": "# Removed non-existent import or added fallback",
+      "conditions": [
+        "Import references non-existent module",
+        "Module path does not exist in codebase"
+      ],
+      "confidence": 1.0
+    },
+    {
+      "name": "logging_standardization",
+      "description": "Standardize logging variable names across codebase",
+      "before_pattern": "LOG = logging.getLogger(...)",
+      "after_pattern": "logger = logging.getLogger(...)",
+      "conditions": [
+        "Codebase uses mixed logging variable names",
+        "Majority of files use 'logger' instead of 'LOG'"
+      ],
+      "confidence": 0.8
+    },
+    {
+      "name": "owner_proxy_pattern",
+      "description": "Implement Owner Proxy pattern for state delegation",
+      "before_pattern": "Direct state access and method calls",
+      "after_pattern": "Proxy-based delegation with __slots__ optimization",
+      "conditions": [
+        "Multiple classes need access to shared state",
+        "State management can be centralized",
+        "Memory optimization is desired"
+      ],
+      "confidence": 0.9
+    }
+  ],
+  "automation_rules": {
+    "import_fixes": [
+      {
+        "pattern": "from core.cli.* import ...",
+        "replacement": "# Removed non-existent import or added fallback",
+        "confidence": 1.0
+      }
+    ],
+    "logging_standardization": {
+      "preferred_pattern": "logger = logging.getLogger(__name__)",
+      "replacements": [
+        {
+          "from": "LOG = logging.getLogger",
+          "to": "logger = logging.getLogger"
+        },
+        {
+          "from": "LOG.",
+          "to": "logger."
+        }
+      ]
+    },
+    "service_extraction_heuristics": [],
+    "quality_checks": []
+  }
+}
