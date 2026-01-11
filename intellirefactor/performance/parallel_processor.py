@@ -238,8 +238,8 @@ class ParallelProcessor:
                 try:
                     file_size_mb = sample_item.stat().st_size / 1024 / 1024
                     return max(file_size_mb * 2, 5.0)  # 2x file size + overhead, min 5MB
-                except:
-                    pass
+                except Exception:
+                    logger.debug("Failed to stat sample_item for memory estimate", exc_info=True)
             return 10.0  # Default for file processing
 
         elif hasattr(sample_item, "__len__"):
@@ -247,8 +247,8 @@ class ParallelProcessor:
             try:
                 length = len(sample_item)
                 return max(length / 1000, 1.0)  # Rough estimate: 1MB per 1000 items
-            except:
-                pass
+            except Exception:
+                logger.debug("Failed to estimate length-based memory usage", exc_info=True)
 
         return 5.0  # Conservative default
 

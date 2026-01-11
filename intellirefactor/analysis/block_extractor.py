@@ -85,7 +85,6 @@ class BlockExtractor:
             self.logger.warning(f"Syntax error in {file_path}: {e}")
             return []
 
-        blocks = []
         lines = source_code.split("\n")
 
         # Extract blocks using AST visitor
@@ -126,6 +125,10 @@ class BlockExtractor:
             normalized_fingerprint=normalized_fp,
         )
 
+    def _fp16(self, data: bytes) -> str:
+        """Stable 16-hex fingerprint (BLAKE2b digest_size=8)."""
+        return hashlib.blake2b(data, digest_size=8).hexdigest()
+
     def _generate_exact_fingerprint(self, source_code: str) -> str:
         """Generate Channel A: Exact token fingerprint using winnowing.
 
@@ -136,7 +139,7 @@ class BlockExtractor:
 
         if len(tokens) < self.k_gram_size:
             # For very small blocks, use simple hash
-            return hashlib.md5("".join(tokens).encode()).hexdigest()[:16]
+            return self._fp16("".join(tokens).encode("utf-8"))
 
         # Generate k-grams
         k_grams = []
@@ -149,7 +152,7 @@ class BlockExtractor:
 
         # Combine fingerprints into single hash
         combined = "".join(sorted(fingerprints))
-        return hashlib.md5(combined.encode()).hexdigest()[:16]
+        return self._fp16(combined.encode("utf-8"))
 
     def _generate_structural_fingerprint(self, node: ast.AST) -> str:
         """Generate Channel B: Structural AST fingerprint.
@@ -158,7 +161,7 @@ class BlockExtractor:
         variable names or literal values.
         """
         structure = self._extract_ast_structure(node)
-        return hashlib.md5(structure.encode()).hexdigest()[:16]
+        return self._fp16(structure.encode("utf-8"))
 
     def _generate_normalized_fingerprint(self, node: ast.AST, source_code: str) -> str:
         """Generate Channel C: Normalized fingerprint.
@@ -169,26 +172,26 @@ class BlockExtractor:
         normalized_source = self._normalize_source(source_code)
 
         # Generate fingerprint from normalized source
-        return hashlib.md5(normalized_source.encode()).hexdigest()[:16]
+        return self._fp16(normalized_source.encode("utf-8"))
 
     def _tokenize_source(self, source_code: str) -> List[str]:
         """Tokenize source code for exact fingerprinting."""
         # Simple tokenization - split on whitespace and punctuation
         tokens = []
-        current_token = ""
+        buf = ""
 
         for char in source_code:
             if char.isalnum() or char == "_":
-                current_token += char
+                buf += char
             else:
-                if current_token:
-                    tokens.append(current_token)
-                    current_token = ""
+                if buf:
+                    tokens.append(buf)
+                    buf = ""
                 if not char.isspace():
                     tokens.append(char)
 
-        if current_token:
-            tokens.append(current_token)
+        if buf:
+            tokens.append(buf)
 
         return [t for t in tokens if t.strip()]
 
@@ -198,7 +201,7 @@ class BlockExtractor:
             return set(k_grams)
 
         # Hash each k-gram
-        hashes = [(hashlib.md5(kg.encode()).hexdigest(), kg) for kg in k_grams]
+        hashes = [(self._fp16(kg.encode("utf-8")), kg) for kg in k_grams]
 
         fingerprints = set()
 

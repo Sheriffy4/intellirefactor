@@ -280,6 +280,7 @@ class RefactoringConfig:
     validation_required: bool = True
     max_operations_per_session: int = 50
     stop_on_failure: bool = True
+    analysis_results_dir: Optional[str] = None
 
 
 @dataclass

@@ -358,7 +358,7 @@ class {class_name}({interface_name}):
                 break
 
         # Avoid duplicate imports.
-        existing = set(l.strip() for l in lines)
+        existing = {line.strip() for line in lines}
         for imp in import_lines:
             if imp not in existing:
                 lines.insert(insert_at, imp)
@@ -729,7 +729,7 @@ class DIContainer:
             if line.strip().startswith(("import ", "from ")):
                 insert_at = i + 1
 
-        existing = set(l.strip() for l in lines)
+        existing = {line.strip() for line in lines}
         for imp in imports_to_add:
             if imp not in existing:
                 lines.insert(insert_at, imp)

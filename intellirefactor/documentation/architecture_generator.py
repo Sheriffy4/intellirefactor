@@ -10,8 +10,8 @@ Generates comprehensive architecture diagrams for Python modules including:
 
 import ast
 from pathlib import Path
-from typing import Dict, List, Any
-from dataclasses import dataclass
+from typing import Dict, List, Any, Optional, Union
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -23,8 +23,8 @@ class Component:
     purpose: str
     complexity: str
     dependencies: List[str]
-    methods: List[str] = None
-    attributes: List[str] = None
+    methods: List[str] = field(default_factory=list)
+    attributes: List[str] = field(default_factory=list)
     line_start: int = 0
     line_end: int = 0
 
@@ -58,7 +58,7 @@ class ArchitectureGenerator:
             with open(file_path, "r", encoding="utf-8") as f:
                 source_code = f.read()
 
-            tree = ast.parse(source_code)
+            tree = ast.parse(source_code)  # ast.Module
 
             # Extract components
             self._extract_components(tree, source_code)
@@ -84,7 +84,7 @@ class ArchitectureGenerator:
                 "design_patterns": [],
             }
 
-    def _extract_components(self, tree: ast.AST, source_code: str) -> None:
+    def _extract_components(self, tree: ast.Module, source_code: str) -> None:
         """Extract components (classes, functions) from AST."""
         lines = source_code.split("\n")
 
@@ -148,7 +148,9 @@ class ArchitectureGenerator:
 
         self.components[node.name] = component
 
-    def _extract_function_component(self, node: ast.AST, lines: List[str]) -> None:
+    def _extract_function_component(
+        self, node: Union[ast.FunctionDef, ast.AsyncFunctionDef], lines: List[str]
+    ) -> None:
         """Extract function component information."""
         # This is module-level only due to _extract_components() implementation.
 
@@ -188,17 +190,11 @@ class ArchitectureGenerator:
 
     def _calculate_class_complexity(self, node: ast.ClassDef, methods: List[str]) -> str:
         """Calculate class complexity based on various metrics."""
-        method_count = len(methods)
-        base_count = len(node.bases)
+        # [IR_DELEGATED] Auto-generated wrapper (functional decomposition)
+        from intellirefactor.unified.documentation import assess_class_complexity as __ir_unified_assess_class_complexity
+        return __ir_unified_assess_class_complexity(self, node, methods)
 
-        if method_count > 20 or base_count > 3:
-            return "High"
-        elif method_count > 10 or base_count > 1:
-            return "Medium"
-        else:
-            return "Low"
-
-    def _calculate_function_complexity(self, node: ast.FunctionDef) -> str:
+    def _calculate_function_complexity(self, node: Union[ast.FunctionDef, ast.AsyncFunctionDef]) -> str:
         """Calculate function complexity based on various metrics."""
         # Count nested structures
         nested_count = 0
@@ -273,7 +269,7 @@ class ArchitectureGenerator:
     def _identify_strategy_pattern(self) -> None:
         """Identify Strategy pattern usage."""
         # Look for classes with similar method signatures
-        method_signatures = {}
+        method_signatures: Dict[str, List[str]] = {}
 
         for name, component in self.components.items():
             if component.type == "class" and component.methods:
@@ -538,7 +534,7 @@ sequenceDiagram
         return diagram
 
 
-def generate_architecture_documentation(file_path: str, output_path: str = None) -> str:
+def generate_architecture_documentation(file_path: str, output_path: Optional[str] = None) -> str:
     """Generate comprehensive architecture documentation for a module."""
     generator = ArchitectureGenerator()
     path_obj = Path(file_path)

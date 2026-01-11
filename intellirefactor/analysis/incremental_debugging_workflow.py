@@ -184,6 +184,7 @@ class IncrementalDebuggingWorkflow:
         # Initialize states
         self.refactoring_state = initial_state.copy() if initial_state else {}
         self.validation_state = {"validation_enabled": True, "strict_mode": False}
+        self.validation_state["debug_session_id"] = debug_session_id
         self.file_states = {}
 
         # Create initial checkpoint
@@ -321,8 +322,8 @@ class IncrementalDebuggingWorkflow:
 
             # Save checkpoint
             checkpoint_file = self.checkpoints_dir / f"{checkpoint_id}.json"
-            with open(checkpoint_file, "w") as f:
-                json.dump(checkpoint.to_dict(), f, indent=2)
+            with open(checkpoint_file, "w", encoding="utf-8") as f:
+                json.dump(checkpoint.to_dict(), f, indent=2, ensure_ascii=False)
 
             self.current_checkpoint = checkpoint
             self.current_progress.checkpoints_created += 1
@@ -593,10 +594,14 @@ class IncrementalDebuggingWorkflow:
 
         try:
             progress_file = self.progress_dir / f"{self.current_progress.workflow_id}.json"
-            with open(progress_file, "w") as f:
-                json.dump(self.current_progress.to_dict(), f, indent=2)
+            with open(progress_file, "w", encoding="utf-8") as f:
+                json.dump(self.current_progress.to_dict(), f, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Failed to save progress: {e}")
+
+    def _hash_bytes(self, data: bytes) -> str:
+        """Stable, non-cryptographic digest for change detection (Bandit-safe)."""
+        return hashlib.blake2b(data, digest_size=16).hexdigest()
 
     def _update_file_states(self):
         """Update file state hashes."""
@@ -606,7 +611,7 @@ class IncrementalDebuggingWorkflow:
                 if py_file.is_file():
                     try:
                         with open(py_file, "rb") as f:
-                            file_hash = hashlib.md5(f.read()).hexdigest()
+                            file_hash = self._hash_bytes(f.read())
                         self.file_states[str(py_file.relative_to(self.workspace_path))] = file_hash
                     except Exception as e:
                         logger.warning(f"Failed to hash file {py_file}: {e}")
@@ -625,7 +630,7 @@ class IncrementalDebuggingWorkflow:
                 if py_file.is_file():
                     try:
                         with open(py_file, "rb") as f:
-                            file_hash = hashlib.md5(f.read()).hexdigest()
+                            file_hash = self._hash_bytes(f.read())
                         relative_path = str(py_file.relative_to(self.workspace_path))
                         current_states[relative_path] = file_hash
                     except Exception as e:

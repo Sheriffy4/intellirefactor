@@ -18,6 +18,18 @@ from __future__ import annotations
 import ast
 import json
 import logging
+
+try:
+    from ..analysis.contextual_analyzer_integration import ContextualAnalyzerIntegration
+    CONTEXTUAL_ANALYSIS_AVAILABLE = True
+except ImportError:
+    CONTEXTUAL_ANALYSIS_AVAILABLE = False
+
+try:
+    from ..analysis.enhanced_method_grouping import EnhancedMethodGrouping
+    ENHANCED_GROUPING_AVAILABLE = True
+except ImportError:
+    ENHANCED_GROUPING_AVAILABLE = False
 import re
 import shutil
 import sys
@@ -501,9 +513,9 @@ class AutoRefactor:
             10,
         )
         self.min_methods_for_extraction = self._validate_positive_int(
-            self.config.get("min_methods_for_extraction", 2),
+            self.config.get("min_methods_for_extraction", 1),
             "min_methods_for_extraction",
-            2,
+            1,
         )
 
         self.effort_per_component = float(self.config.get("effort_per_component", 2.5))
@@ -516,6 +528,24 @@ class AutoRefactor:
         self._codebase_analysis: Optional[Dict[str, Any]] = None
         if IMPORT_FIXING_AVAILABLE:
             self._analyze_codebase_standards()
+
+        # Инициализация контекстного анализатора
+        self._contextual_analyzer: Optional[ContextualAnalyzerIntegration] = None
+        if CONTEXTUAL_ANALYSIS_AVAILABLE and not self.config.get("disable_contextual_analysis", False):
+            analysis_dir = self.config.get("analysis_results_dir")
+            if analysis_dir:
+                self._contextual_analyzer = ContextualAnalyzerIntegration(Path(analysis_dir))
+            else:
+                self._contextual_analyzer = ContextualAnalyzerIntegration()
+            logger.info("Contextual analyzer integration enabled")
+        elif self.config.get("disable_contextual_analysis", False):
+            logger.info("Contextual analyzer disabled by configuration")
+
+        # Инициализация улучшенной группировки методов
+        self._enhanced_grouping: Optional[EnhancedMethodGrouping] = None
+        if ENHANCED_GROUPING_AVAILABLE:
+            self._enhanced_grouping = EnhancedMethodGrouping()
+            logger.info("Enhanced method grouping enabled")
 
     def _validate_positive_int(self, value: Any, name: str, default: int) -> int:
         try:
@@ -575,6 +605,9 @@ class AutoRefactor:
         try:
             content = filepath.read_text(encoding="utf-8-sig")
             tree = ast.parse(content)
+            # Кешируем контент для использования в других методах
+            self._cached_content = content
+            self._original_filepath = filepath
         except Exception as e:
             logger.error("Failed to read/parse %s: %s", filepath, e)
             return self._create_empty_plan(filepath)
@@ -584,18 +617,81 @@ class AutoRefactor:
             logger.info("No God Object found (max methods: %s)", max_methods)
             return self._create_empty_plan(filepath)
 
+        # Попытка использовать контекстный анализ
+        contextual_data = None
+        if self._contextual_analyzer:
+            try:
+                project_path = self._find_project_root(filepath)
+                contextual_data = self._contextual_analyzer.load_analysis_for_file(filepath, project_path)
+                if contextual_data:
+                    logger.info("Contextual analysis data available, but checking quality...")
+                    # Проверяем качество контекстного анализа
+                    contextual_groups = self._contextual_analyzer.extract_method_groups_from_context(
+                        contextual_data, main_class.name
+                    )
+                    if len(contextual_groups) < 3:  # Если контекстный анализ дает мало групп
+                        logger.warning(f"Contextual analysis gives only {len(contextual_groups)} groups, using enhanced grouping instead")
+                        contextual_data = None  # Игнорируем слабый контекстный анализ
+                    else:
+                        logger.info("Using contextual analysis data for enhanced refactoring")
+                else:
+                    logger.info("No contextual analysis data found, using enhanced grouping")
+            except Exception as e:
+                logger.warning(f"Failed to load contextual analysis: {e}")
+                contextual_data = None
+
         import_collector = ImportCollector()
         import_collector.visit(tree)
         module_level_names = self._collect_module_level_names(tree)
 
-        (
-            method_groups,
-            private_by_group,
-            unextracted,
-            init_method,
-            dunder_methods,
-            dangerous_methods,
-        ) = self._group_methods_by_responsibility(main_class, module_level_names)
+        # Используем контекстную группировку если доступна
+        if contextual_data:
+            method_groups = self._contextual_analyzer.extract_method_groups_from_context(
+                contextual_data, main_class.name
+            )
+            # Преобразуем в формат MethodInfo
+            method_groups = self._convert_contextual_groups_to_method_info(
+                method_groups, main_class, module_level_names
+            )
+        elif self._enhanced_grouping:
+            # Используем улучшенную группировку
+            logger.info("Using enhanced method grouping for better refactoring")
+            method_groups = self._use_enhanced_grouping(main_class, module_level_names)
+        else:
+            # Стандартная группировка
+            (
+                method_groups,
+                private_by_group,
+                unextracted,
+                init_method,
+                dunder_methods,
+                dangerous_methods,
+            ) = self._group_methods_by_responsibility(main_class, module_level_names)
+
+        # Если использовали контекстную группировку, нужно получить остальные данные
+        if contextual_data and method_groups:
+            (
+                _,
+                private_by_group,
+                unextracted,
+                init_method,
+                dunder_methods,
+                dangerous_methods,
+            ) = self._group_methods_by_responsibility(main_class, module_level_names)
+        elif self._enhanced_grouping and not contextual_data:
+            # Используем улучшенную группировку только если нет контекстных данных
+            # Получаем остальные данные стандартным способом
+            (
+                _,
+                private_by_group,
+                unextracted,
+                init_method,
+                dunder_methods,
+                dangerous_methods,
+            ) = self._group_methods_by_responsibility(main_class, module_level_names)
+        elif not contextual_data:
+            # Уже получили все данные выше
+            pass
 
         extracted_components: List[str] = []
         new_files: List[str] = []
@@ -646,6 +742,121 @@ class AutoRefactor:
             _dangerous_methods=dangerous_methods,
         )
 
+    def _find_project_root(self, filepath: Path) -> Path:
+        """Находит корень проекта."""
+        current = filepath.parent if filepath.is_file() else filepath
+        
+        # Поднимаемся вверх по дереву каталогов
+        while current != current.parent:
+            # Ищем признаки корня проекта
+            markers = ['.git', 'pyproject.toml', 'setup.py', 'requirements.txt', 'intellirefactor.json']
+            if any((current / marker).exists() for marker in markers):
+                logger.info(f"Found project root: {current}")
+                return current
+            current = current.parent
+            
+        # Если не нашли, используем текущую рабочую директорию
+        cwd = Path.cwd()
+        logger.info(f"Using current working directory as project root: {cwd}")
+        return cwd
+
+    def _convert_contextual_groups_to_method_info(
+        self, 
+        contextual_groups: Dict[str, List[str]], 
+        main_class: ast.ClassDef, 
+        module_level_names: Set[str]
+    ) -> Dict[str, List[MethodInfo]]:
+        """Преобразует контекстные группы в формат MethodInfo."""
+        # Сначала получаем все методы класса
+        all_methods = {}
+        for node in main_class.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if not node.name.startswith("__"):  # Исключаем dunder методы
+                    info = analyze_method(
+                        node,
+                        module_level_names=module_level_names,
+                        allow_bare_self=not self.skip_methods_with_bare_self_usage,
+                        allow_dangerous=not self.skip_methods_with_dangerous_patterns,
+                        allow_module_level_deps=not self.skip_methods_with_module_level_deps,
+                        decorated_extract_allowed=self.extract_decorated_public_methods,
+                    )
+                    all_methods[node.name] = info
+
+        # Преобразуем группы
+        method_groups = {}
+        for group_name, method_names in contextual_groups.items():
+            group_methods = []
+            for method_name in method_names:
+                if method_name in all_methods:
+                    group_methods.append(all_methods[method_name])
+            if group_methods:
+                method_groups[group_name] = group_methods
+
+        return method_groups
+
+    def _use_enhanced_grouping(self, main_class: ast.ClassDef, module_level_names: Set[str]) -> Dict[str, List[MethodInfo]]:
+        """Использует улучшенную систему группировки методов."""
+        
+        # Получаем контент из плана или читаем файл заново
+        content = ""
+        if hasattr(self, '_cached_content') and self._cached_content:
+            content = self._cached_content
+        elif hasattr(self, '_original_filepath') and self._original_filepath:
+            content = self._original_filepath.read_text(encoding='utf-8')
+        else:
+            # Последний резерв - пытаемся найти файл через AST
+            logger.warning("No cached content available for enhanced grouping")
+            return {}
+        
+        # Анализируем все методы с улучшенным анализом
+        enhanced_methods = []
+        for node in main_class.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if not node.name.startswith("__"):  # Исключаем dunder методы
+                    enhanced_method = self._enhanced_grouping.analyze_method_enhanced(node, content)
+                    enhanced_methods.append(enhanced_method)
+        
+        # Группируем методы с улучшенной логикой
+        enhanced_groups = self._enhanced_grouping.group_methods_enhanced(enhanced_methods)
+        
+        # Генерируем улучшенные ключевые слова ответственности
+        enhanced_keywords = self._enhanced_grouping.generate_enhanced_responsibility_keywords(
+            enhanced_groups, enhanced_methods
+        )
+        
+        # Обновляем ключевые слова ответственности для лучшего именования компонентов
+        self.responsibility_keywords.update(enhanced_keywords)
+        
+        logger.info(f"Enhanced grouping created {len(enhanced_groups)} groups with "
+                   f"{sum(len(methods) for methods in enhanced_groups.values())} methods")
+        
+        # Преобразуем в формат MethodInfo для совместимости
+        method_groups = {}
+        for group_name, method_names in enhanced_groups.items():
+            group_methods = []
+            for method_name in method_names:
+                # Находим соответствующий AST узел
+                for node in main_class.body:
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == method_name:
+                        method_info = analyze_method(
+                            node,
+                            module_level_names=module_level_names,
+                            allow_bare_self=not self.skip_methods_with_bare_self_usage,
+                            allow_dangerous=not self.skip_methods_with_dangerous_patterns,
+                            allow_module_level_deps=not self.skip_methods_with_module_level_deps,
+                            decorated_extract_allowed=self.extract_decorated_public_methods,
+                        )
+                        group_methods.append(method_info)
+                        break
+            
+            if group_methods:
+                # Генерируем более осмысленное имя группы
+                component_name = self._enhanced_grouping._generate_component_name(group_name, [])
+                clean_group_name = component_name.lower().replace('service', '').replace('handler', '').replace('processor', '')
+                method_groups[clean_group_name] = group_methods
+        
+        return method_groups
+
     def refactor_project(
         self,
         project_path: Union[str, Path],
@@ -653,7 +864,6 @@ class AutoRefactor:
         dry_run: bool = True,
     ) -> Dict[str, Any]:
         _ = strategy  # reserved for future extensions
-        _ = dry_run   # currently only analysis is performed here
 
         project_path = Path(project_path)
         results: Dict[str, Any] = {
@@ -671,25 +881,80 @@ class AutoRefactor:
             return results
 
         try:
-            for p in project_path.rglob("*.py"):
+            planned_changes = []
+            
+            # Determine if we're working with a single file or directory
+            if project_path.is_file() and project_path.suffix == '.py':
+                # Single Python file
+                files_to_analyze = [project_path]
+            elif project_path.is_dir():
+                # Directory - find all Python files recursively
+                files_to_analyze = list(project_path.rglob("*.py"))
+            else:
+                results["success"] = False
+                results["errors"].append(f"Path must be a Python file or directory: {project_path}")
+                return results
+            
+            # First pass: analyze all files to find refactoring opportunities
+            for p in files_to_analyze:
                 try:
                     plan = self.analyze_god_object(p)
                     if plan.transformations:
-                        results["changes"].append(
-                            {
-                                "file": str(p),
-                                "target_class": plan.target_class_name,
-                                "transformations": plan.transformations,
-                                "new_files": plan.new_files,
-                                "estimated_effort": plan.estimated_effort,
-                                "risk_level": plan.risk_level,
-                            }
-                        )
+                        change_info = {
+                            "file": str(p),
+                            "target_class": plan.target_class_name,
+                            "transformations": plan.transformations,
+                            "new_files": plan.new_files,
+                            "estimated_effort": plan.estimated_effort,
+                            "risk_level": plan.risk_level,
+                            "plan": plan,  # Keep the plan for execution
+                        }
+                        planned_changes.append(change_info)
+                        results["changes"].append({
+                            "file": str(p),
+                            "target_class": plan.target_class_name,
+                            "transformations": plan.transformations,
+                            "new_files": plan.new_files,
+                            "estimated_effort": plan.estimated_effort,
+                            "risk_level": plan.risk_level,
+                        })
                 except Exception as e:
                     results["warnings"].append(f"Failed to analyze {p}: {e}")
 
-            results["operations_applied"] = len(results["changes"])
+            if dry_run:
+                # In dry-run mode, only return analysis results
+                results["operations_applied"] = 0  # No operations actually applied
+                results["planned_operations"] = len(planned_changes)  # Show what would be done
+                return results
+            
+            # If not dry-run, execute the refactoring for each file
+            actual_operations = 0
+            for change_info in planned_changes:
+                try:
+                    file_path = Path(change_info["file"])
+                    plan = change_info["plan"]
+                    
+                    # Execute refactoring for this file
+                    execution_result = self.execute_refactoring(file_path, plan, dry_run=False)
+                    
+                    if execution_result.get("success", False):
+                        actual_operations += 1
+                        # Update change info with execution results
+                        change_info.update({
+                            "files_created": execution_result.get("files_created", []),
+                            "files_modified": execution_result.get("files_modified", []),
+                            "backup_created": execution_result.get("backup_created"),
+                        })
+                    else:
+                        results["errors"].extend(execution_result.get("errors", []))
+                        results["warnings"].extend(execution_result.get("warnings", []))
+                        
+                except Exception as e:
+                    results["errors"].append(f"Failed to execute refactoring for {change_info['file']}: {e}")
+
+            results["operations_applied"] = actual_operations
             return results
+            
         except Exception as e:
             results["success"] = False
             results["errors"].append(str(e))
@@ -744,7 +1009,10 @@ class AutoRefactor:
             return results
 
         self._original_filepath = filepath
-        output_dir = filepath.parent / self.output_directory
+        # Создаем уникальную папку для каждого файла: filename_components
+        file_stem = filepath.stem
+        unique_output_dir = f"{file_stem}_{self.output_directory}"
+        output_dir = filepath.parent / unique_output_dir
 
         try:
             if dry_run:
@@ -1547,15 +1815,35 @@ class AutoRefactor:
         return "\n".join(out)
 
     def _generate_facade_import_block(self, components: List[str]) -> List[str]:
+        """
+        Generate robust import block for facade with better error handling.
+        """
         pkg = self.output_directory
         iface_names = ", ".join(f"{self.interface_prefix}{c}" for c in components)
+        
         return [
+            "# Auto-generated imports for refactored components",
             "try:",
             f"    from .{pkg}.container import DIContainer",
             f"    from .{pkg}.interfaces import {iface_names}",
-            "except ImportError:  # pragma: no cover",
-            f"    from {pkg}.container import DIContainer",
-            f"    from {pkg}.interfaces import {iface_names}",
+            "except ImportError as e:",
+            "    # Fallback for different import contexts",
+            "    try:",
+            f"        from {pkg}.container import DIContainer",
+            f"        from {pkg}.interfaces import {iface_names}",
+            "    except ImportError:",
+            "        # If components are not available, create stub implementations",
+            "        import logging",
+            "        logger = logging.getLogger(__name__)",
+            "        logger.warning(f'Component imports failed: {e}. Using stub implementations.')",
+            "        ",
+            "        class DIContainer:",
+            "            @classmethod",
+            "            def create_default(cls): return cls()",
+            "            def get(self, interface, owner): return None",
+            "        ",
+            f"        # Stub interfaces for {iface_names}",
+            "        " + "\n        ".join([f"class {self.interface_prefix}{c}: pass" for c in components]),
         ]
 
     def _create_enhanced_init_method(
@@ -1726,30 +2014,133 @@ class AutoRefactor:
         """
         errors: List[str] = []
         output_dir = facade_path.parent / self.output_directory
+        
+        # Also check for file-specific component directories
+        file_stem = facade_path.stem.replace(self.facade_suffix, "")
+        file_specific_dir = facade_path.parent / f"{file_stem}_{self.output_directory}"
+        
+        # Use whichever directory exists
+        if file_specific_dir.exists():
+            output_dir = file_specific_dir
+            logger.debug(f"Using file-specific components directory: {output_dir}")
+        elif output_dir.exists():
+            logger.debug(f"Using standard components directory: {output_dir}")
 
-        # If output dir doesn't exist, skip (e.g. in some dry-run contexts).
+        # If output dir doesn't exist, skip validation
         if not output_dir.exists():
+            logger.debug(f"Output directory {output_dir} doesn't exist, skipping validation")
             return errors
 
-        expected = {
-            "container.py": output_dir / "container.py",
-            "interfaces.py": output_dir / "interfaces.py",
-            "__init__.py": output_dir / "__init__.py",
-        }
-
+        # Check for imports that reference the components package
         imports_components_pkg = False
+        imported_modules = set()
+        
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module:
-                if node.module.endswith(f"{self.output_directory}.container") or node.module.endswith(f"{self.output_directory}.interfaces"):
+                module_name = node.module
+                imported_modules.add(module_name)
+                
+                # Check for various import patterns
+                if (module_name.endswith(f".{self.output_directory}.container") or 
+                    module_name.endswith(f".{self.output_directory}.interfaces") or
+                    module_name == f"{self.output_directory}.container" or
+                    module_name == f"{self.output_directory}.interfaces" or
+                    # Also check for file-specific component directories
+                    "_components.container" in module_name or
+                    "_components.interfaces" in module_name):
                     imports_components_pkg = True
-                    break
 
-        if imports_components_pkg:
-            for name, path in expected.items():
-                if not path.exists():
-                    errors.append(f"Missing generated file {self.output_directory}/{name}")
+        if not imports_components_pkg:
+            logger.debug("No component package imports found, skipping file validation")
+            return errors
+
+        # Define expected files
+        expected_files = {
+            "container.py": "DI container implementation",
+            "interfaces.py": "Component interfaces",
+            "__init__.py": "Package initialization",
+            "base.py": "Base classes for components"
+        }
+
+        # Check that all expected files exist
+        for filename, description in expected_files.items():
+            file_path = output_dir / filename
+            if not file_path.exists():
+                errors.append(f"Missing {description}: {self.output_directory}/{filename}")
+                continue
+                
+            # Validate syntax of generated files
+            try:
+                content = file_path.read_text(encoding='utf-8')
+                ast.parse(content)
+                logger.debug(f"✅ Syntax validation passed for {filename}")
+            except SyntaxError as e:
+                errors.append(f"Syntax error in {self.output_directory}/{filename} at line {e.lineno}: {e.msg}")
+            except Exception as e:
+                errors.append(f"Failed to validate {self.output_directory}/{filename}: {e}")
+
+        # Check for component service files
+        component_files = list(output_dir.glob("*_service.py"))
+        if not component_files:
+            errors.append(f"No component service files found in {self.output_directory}/")
+        else:
+            logger.debug(f"Found {len(component_files)} component service files")
+            
+            # Validate component service files
+            for comp_file in component_files:
+                try:
+                    content = comp_file.read_text(encoding='utf-8')
+                    ast.parse(content)
+                except SyntaxError as e:
+                    errors.append(f"Syntax error in {comp_file.name} at line {e.lineno}: {e.msg}")
+                except Exception as e:
+                    errors.append(f"Failed to validate {comp_file.name}: {e}")
+
+        # Validate import consistency
+        self._validate_import_consistency(facade_path, output_dir, imported_modules, errors)
 
         return errors
+
+    def _validate_import_consistency(self, facade_path: Path, output_dir: Path, imported_modules: set, errors: List[str]) -> None:
+        """
+        Validate that imports in the facade are consistent with generated files.
+        """
+        try:
+            # Check container.py imports
+            container_file = output_dir / "container.py"
+            if container_file.exists():
+                container_content = container_file.read_text(encoding='utf-8')
+                container_tree = ast.parse(container_content)
+                
+                # Extract component imports from container
+                container_imports = set()
+                for node in ast.walk(container_tree):
+                    if isinstance(node, ast.ImportFrom) and node.module:
+                        if node.module.startswith('.') and '_service' in node.module:
+                            container_imports.add(node.module)
+                
+                logger.debug(f"Container imports: {container_imports}")
+
+            # Check interfaces.py
+            interfaces_file = output_dir / "interfaces.py"
+            if interfaces_file.exists():
+                interfaces_content = interfaces_file.read_text(encoding='utf-8')
+                interfaces_tree = ast.parse(interfaces_content)
+                
+                # Check that interfaces are properly defined
+                interface_classes = []
+                for node in interfaces_tree.body:
+                    if isinstance(node, ast.ClassDef) and node.name.startswith(self.interface_prefix):
+                        interface_classes.append(node.name)
+                
+                if not interface_classes:
+                    errors.append(f"No interface classes found in {self.output_directory}/interfaces.py")
+                else:
+                    logger.debug(f"Found interfaces: {interface_classes}")
+
+        except Exception as e:
+            logger.warning(f"Failed to validate import consistency: {e}")
+            # Don't add to errors - this is a non-critical validation
 
     @contextmanager
     def _atomic_write_session(self):

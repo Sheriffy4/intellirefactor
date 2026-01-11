@@ -1,0 +1,1000 @@
+"""
+Functional Map Builder
+
+Builds the complete functional map of a project by orchestrating all decomposition components.
+"""
+
+import ast
+import logging
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple
+from collections import defaultdict
+
+from .models import (
+    FunctionalBlock,
+    Capability,
+    ProjectFunctionalMap,
+    DecompositionConfig,
+    FileSymbolTable,
+    UnresolvedReason,
+    as_reason,
+)
+from .block_extractor import FunctionalBlockExtractor
+from .categorizer import FunctionCategorizer
+from .clustering import FunctionalClusterer
+from .utils import make_block_id, iter_toplevel_import_nodes
+from ..project_analyzer import ProjectAnalyzer
+
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_resolve_path(p: str | Path) -> str:
+    try:
+        return str(Path(p).resolve())
+    except Exception:
+        return str(Path(p))
+
+
+def _collect_toplevel_class_names(tree: ast.Module) -> Set[str]:
+    """
+    Collect class names defined at module top-level and inside top-level If/Try blocks.
+    (Conservative: we don’t try to fully model scopes.)
+    """
+    class_names: Set[str] = set()
+
+    def scan_nodes(nodes: List[ast.stmt]) -> None:
+        for n in nodes:
+            if isinstance(n, ast.ClassDef):
+                class_names.add(n.name)
+            elif isinstance(n, ast.If):
+                scan_nodes(n.body)
+                scan_nodes(n.orelse)
+            elif isinstance(n, ast.Try):
+                scan_nodes(n.body)
+                scan_nodes(n.orelse)
+                scan_nodes(n.finalbody)
+                for h in n.handlers:
+                    scan_nodes(h.body)
+
+    scan_nodes(list(getattr(tree, "body", [])))
+    return class_names
+
+
+def build_file_symbol_table(tree: ast.Module, current_module: str = "") -> Tuple[FileSymbolTable, Set[str]]:
+    """
+    Build symbol table for a file from its AST.
+
+    Args:
+        tree: AST module
+        current_module: Current module path for relative imports
+
+    Returns:
+        Tuple of (FileSymbolTable with resolved aliases, Set of class names defined in file)
+    """
+    tbl = FileSymbolTable(current_module=current_module)
+    class_names = _collect_toplevel_class_names(tree)
+
+    # v6.6: Scan top-level Try/If blocks for imports (not just tree.body)
+    for node in iter_toplevel_import_nodes(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                name = alias.name  # "package.sub"
+                asname = alias.asname or name.split(".")[0]  # "sub" or "np"
+                tbl.module_aliases[asname] = name
+
+        elif isinstance(node, ast.ImportFrom):
+            # Handle star imports
+            if any(a.name == "*" for a in node.names):
+                tbl.has_star_import = True
+                continue
+
+            # Resolve absolute_module (including "from . import x" where node.module is None)
+            if node.level > 0:
+                if not current_module:
+                    # No current module context -> can't resolve reliably
+                    continue
+
+                module_parts = current_module.split(".")
+                if len(module_parts) < node.level:
+                    continue
+
+                base_module = ".".join(module_parts[:-node.level])
+                if node.module:
+                    absolute_module = f"{base_module}.{node.module}" if base_module else node.module
+                else:
+                    # from . import x  => absolute_module == base_module
+                    if not base_module:
+                        continue
+                    absolute_module = base_module
+            else:
+                # level == 0, absolute import
+                if not node.module:
+                    continue
+                absolute_module = node.module
+
+            for alias in node.names:
+                imported = alias.name
+                asname = alias.asname or imported
+                tbl.symbol_aliases[asname] = f"{absolute_module}.{imported}"
+
+    return tbl, class_names
+
+
+class FunctionalMapBuilder:
+    """
+    Orchestrates the building of a complete functional map for a project.
+    """
+
+    def __init__(self, config: Optional[DecompositionConfig] = None):
+        self.config = config or DecompositionConfig.default()
+        self.logger = logger
+
+        # Initialize components (IMPORTANT: use self.config, not raw param)
+        self.block_extractor = FunctionalBlockExtractor(self.config)
+        self.categorizer = FunctionCategorizer(self.config)
+        self.clusterer = FunctionalClusterer(self.config)
+
+        # Call graph cache
+        self._call_edges: List[Tuple[str, str]] = []
+        self._unresolved_calls: List[Dict[str, Any]] = []
+
+    def _normalize_module_name(self, module_name: str) -> str:
+        """
+        Keep module naming consistent with FileSymbolTable.resolve_call(... project_roots ...),
+        i.e. strip configured project_package_roots prefixes.
+        """
+        mn = module_name or ""
+        for root in self.config.project_package_roots:
+            if root and mn.startswith(root + "."):
+                mn = mn[len(root) + 1 :]
+        return mn
+
+    def build_functional_map(self, project_root: str) -> ProjectFunctionalMap:
+        """
+        Build complete functional map for a project.
+        """
+        project_path = Path(project_root).resolve()
+        self.logger.info(f"Building functional map for project: {project_path}")
+
+        source_files = self._discover_source_files(project_path)
+        self.logger.info(f"Found {len(source_files)} source files")
+
+        all_blocks: List[FunctionalBlock] = []
+        file_symbol_tables: Dict[str, FileSymbolTable] = {}
+        file_class_definitions: Dict[str, Set[str]] = {}
+
+        for file_path in source_files:
+            abs_file = Path(file_path).resolve()
+            module_name = self._path_to_module_name(abs_file, project_path)
+            module_name = self._normalize_module_name(module_name)
+
+            file_key = _safe_resolve_path(abs_file)
+
+            # Build symbol table and class definitions for this file if enabled
+            if self.config.enable_symbol_table_resolution:
+                try:
+                    source = abs_file.read_text(encoding="utf-8")
+                    if source.strip():
+                        tree = ast.parse(source, filename=str(abs_file))
+                        symbol_table, class_names = build_file_symbol_table(tree, module_name)
+                        file_symbol_tables[file_key] = symbol_table
+                        file_class_definitions[file_key] = class_names
+                    else:
+                        file_symbol_tables[file_key] = FileSymbolTable(current_module=module_name)
+                        file_class_definitions[file_key] = set()
+                except Exception as e:
+                    self.logger.debug(f"Failed to build symbol table for {abs_file}: {e}")
+                    file_symbol_tables[file_key] = FileSymbolTable(current_module=module_name)
+                    file_class_definitions[file_key] = set()
+
+            # Extract blocks
+            try:
+                blocks = self.block_extractor.extract_from_file(str(abs_file), module_name)
+            except Exception as e:
+                self.logger.warning(f"Failed to extract blocks from {abs_file}: {e}")
+                continue
+
+            # Unified IDs (project_root aware)
+            for b in blocks:
+                # ensure file_path is consistent for table lookup
+                b.file_path = _safe_resolve_path(b.file_path)
+
+                b.id = make_block_id(
+                    project_root=str(project_path),
+                    file_path=b.file_path,
+                    module=b.module,
+                    qualname=b.qualname,
+                    lineno=b.lineno,
+                )
+
+            all_blocks.extend(blocks)
+
+        self.logger.info(f"Extracted {len(all_blocks)} functional blocks")
+
+        categorized_blocks = self.categorizer.categorize_blocks(all_blocks)
+
+        # Build call graph
+        if self.config.enable_symbol_table_resolution:
+            self._build_call_graph_enhanced(categorized_blocks, file_symbol_tables, file_class_definitions)
+        else:
+            self._build_call_graph(categorized_blocks)
+
+        capabilities = self._identify_capabilities(categorized_blocks)
+        clusters = self.clusterer.cluster_blocks(categorized_blocks)
+
+        functional_map = ProjectFunctionalMap(
+            project_root=str(project_path),
+            timestamp=datetime.now().isoformat(),
+            blocks={block.id: block for block in categorized_blocks},
+            capabilities={cap.name: cap for cap in capabilities},
+            clusters={cluster.id: cluster for cluster in clusters},
+            call_edges=getattr(self, "_call_edges", []),
+            unresolved_calls=getattr(self, "_unresolved_calls", []),
+        )
+
+        # dataclass уже вызовет __post_init__, но на всякий случай поддержим оба варианта:
+        if hasattr(functional_map, "recompute_stats"):
+            functional_map.recompute_stats()  # type: ignore[attr-defined]
+
+        self.logger.info(
+            f"Built functional map: {functional_map.total_blocks} blocks, "
+            f"{functional_map.total_capabilities} capabilities, "
+            f"{functional_map.total_clusters} clusters"
+        )
+        return functional_map
+
+    def _discover_source_files(self, project_path: Path) -> List[Path]:
+        """Discover Python source files in the project."""
+        try:
+            analyzer = ProjectAnalyzer(project_root=str(project_path))
+            file_paths = analyzer.identify_source_files(str(project_path))
+            result: List[Path] = []
+            for fp in file_paths:
+                p = Path(fp)
+                if not p.is_absolute():
+                    p = (project_path / p).resolve()
+                result.append(p)
+            return result
+        except Exception as e:
+            self.logger.warning(f"Failed to use ProjectAnalyzer, falling back to simple discovery: {e}")
+
+            skip_parts = {"__pycache__", ".git", ".venv", "venv", "build", "dist", ".tox"}
+            source_files: List[Path] = []
+            for py_file in project_path.rglob("*.py"):
+                if any(part in skip_parts for part in py_file.parts):
+                    continue
+                source_files.append(py_file.resolve())
+            return source_files
+
+    def _path_to_module_name(self, file_path: Path, project_root: Path) -> str:
+        """Convert file path to Python module name."""
+        try:
+            rel_path = file_path.relative_to(project_root)
+            parts = list(rel_path.parts[:-1])  # directory parts
+
+            if rel_path.name != "__init__.py":
+                parts.append(rel_path.stem)
+
+            return ".".join(parts) if parts else ""
+        except ValueError:
+            return file_path.stem
+
+    def _build_call_graph_enhanced(
+        self,
+        blocks: List[FunctionalBlock],
+        file_symbol_tables: Dict[str, FileSymbolTable],
+        file_class_definitions: Dict[str, Set[str]],
+    ) -> None:
+        """Build call graph with enhanced resolution using symbol tables."""
+        start_time = time.time()
+
+        call_edges: List[Tuple[str, str]] = []
+        unresolved_calls: List[Dict[str, Any]] = []
+        resolution_stats: Dict[str, int] = {
+            "class_method_same_module": 0,
+            "local_type_hint": 0,
+            "exact_qualname": 0,
+            "symbol_table": 0,
+            "method_name": 0,
+            "same_module": 0,
+            "constructor_same_module": 0,
+            "constructor_imported": 0,
+            UnresolvedReason.ambiguous.value: 0,
+            UnresolvedReason.not_found.value: 0,
+            UnresolvedReason.external.value: 0,
+            UnresolvedReason.star_import.value: 0,
+            UnresolvedReason.dynamic_attribute.value: 0,
+            UnresolvedReason.baseclass_method.value: 0,
+            UnresolvedReason.class_instantiation.value: 0,
+            UnresolvedReason.self_call.value: 0,
+            UnresolvedReason.dynamic_callback.value: 0,
+            UnresolvedReason.nested_local.value: 0,
+        }
+
+        self.logger.info("Building call resolution indices...")
+        indices = self._build_resolution_indices(blocks)
+        # Build module -> class_names index (helps classify imported constructors even if class has no methods)
+        module_class_defs: Dict[str, Set[str]] = defaultdict(set)
+        for b in blocks:
+            fk = _safe_resolve_path(b.file_path)
+            module_class_defs[b.module].update(file_class_definitions.get(fk, set()))
+
+        # Clear once to prevent wiping called_by repeatedly
+        for b in blocks:
+            b.calls = []
+            b.called_by = []
+
+        for block in blocks:
+            file_key = _safe_resolve_path(block.file_path)
+            symbol_table = file_symbol_tables.get(file_key, FileSymbolTable(current_module=block.module))
+            class_definitions = file_class_definitions.get(file_key, set())
+
+            for raw_call in block.raw_calls:
+                resolved_target, reason = self._resolve_call_enhanced(
+                    block, raw_call, symbol_table, indices, class_definitions, module_class_defs
+                )
+
+                if resolved_target:
+                    if resolved_target.id == block.id:
+                        unresolved_calls.append(
+                            {
+                                "caller_id": block.id,
+                                "raw_call": raw_call,
+                                "file": block.file_path,
+                                "lineno": block.lineno,
+                                "reason": UnresolvedReason.self_call.value,
+                            }
+                        )
+                        resolution_stats[UnresolvedReason.self_call.value] += 1
+                        continue
+
+                    block.calls.append(resolved_target.id)
+                    resolved_target.called_by.append(block.id)
+                    call_edges.append((block.id, resolved_target.id))
+
+                    resolution_stats.setdefault(reason, 0)
+                    resolution_stats[reason] += 1
+                else:
+                    r = as_reason(reason).value
+                    unresolved_calls.append(
+                        {
+                            "caller_id": block.id,
+                            "raw_call": raw_call,
+                            "file": block.file_path,
+                            "lineno": block.lineno,
+                            "reason": r,
+                        }
+                    )
+                    resolution_stats.setdefault(r, 0)
+                    resolution_stats[r] += 1
+
+        self._call_edges = call_edges
+        self._unresolved_calls = unresolved_calls
+
+        elapsed = time.time() - start_time
+        total_calls = sum(resolution_stats.values())
+        resolved_calls = len(call_edges)
+
+        self.logger.info(f"Call graph built in {elapsed:.2f}s")
+        self.logger.info("Resolution statistics:")
+        for reason, count in resolution_stats.items():
+            percentage = (count / total_calls * 100) if total_calls > 0 else 0
+            self.logger.info(f"  {reason}: {count} ({percentage:.1f}%)")
+
+        if total_calls > 0:
+            self.logger.info(
+                f"Overall resolution rate: {resolved_calls}/{total_calls} ({resolved_calls / total_calls * 100:.1f}%)"
+            )
+
+    def _build_resolution_indices(self, blocks: List[FunctionalBlock]) -> Dict[str, Any]:
+        """Build efficient indices for call resolution."""
+        indices: Dict[str, Any] = {
+            "module_func": {},          # module -> function_name -> [blocks]
+            "module_class_method": {},  # module -> class_name -> method_name -> block
+            "qualname": {},             # qualname -> [blocks]
+            "method_name": {},          # method_name -> [blocks]
+            "module": {},               # module -> [blocks]
+        }
+
+        for block in blocks:
+            indices["module"].setdefault(block.module, []).append(block)
+
+            indices["module_func"].setdefault(block.module, {}).setdefault(block.method_name, []).append(block)
+
+            indices["qualname"].setdefault(block.qualname, []).append(block)
+
+            indices["method_name"].setdefault(block.method_name, []).append(block)
+
+            if block.is_method and block.class_name:
+                indices["module_class_method"].setdefault(block.module, {}).setdefault(block.class_name, {})[
+                    block.method_name
+                ] = block
+
+        return indices
+
+    def _resolve_call_enhanced(
+        self,
+        caller: FunctionalBlock,
+        raw_call: str,
+        symbol_table: FileSymbolTable,
+        indices: Dict[str, Any],
+        class_definitions: Optional[Set[str]] = None,
+        module_class_defs: Optional[Dict[str, Set[str]]] = None,
+    ) -> Tuple[Optional[FunctionalBlock], str]:
+        """Enhanced call resolution using symbol tables and indices."""
+        if module_class_defs is None:
+            module_class_defs = {}
+        
+        if class_definitions is None:
+            class_definitions = set()
+
+        normalized_call = symbol_table.resolve_call(raw_call, self.config.project_package_roots)
+        normalized_call = self._apply_block_import_hints(caller, raw_call, normalized_call)
+
+        # Constructor call resolution: ClassName(...) -> ClassName.__init__
+        if "." not in raw_call and raw_call and raw_call.lstrip("_") and raw_call.lstrip("_")[0].isupper():
+            cls = raw_call
+            fq = normalized_call
+
+            if "." in fq:
+                external_module_prefixes = {
+                    "pathlib.", "collections.", "rich.", "psutil.", "gc.", "difflib.",
+                    "uuid.", "textwrap.", "sqlite3.", "networkx.", "libcst.", "cst.",
+                    "numpy.", "pandas.", "matplotlib.", "scipy.", "sklearn.", "requests.",
+                    "flask.", "django.", "fastapi.", "click.", "pytest.", "unittest.",
+                    "typing.", "dataclasses.", "enum.", "abc.",
+                    "contextlib.", "warnings.", "traceback.", "inspect.", "ast.",
+                    "tokenize.", "importlib.", "pkgutil.", "subprocess.", "threading.",
+                    "multiprocessing.", "asyncio.", "concurrent.", "urllib.", "http.",
+                    "socket.", "ssl.", "hashlib.", "hmac.", "base64.", "binascii.",
+                    "struct.", "array.", "bytes.", "string.", "math.", "random.",
+                    "statistics.", "decimal.", "fractions", "csv.", "configparser.",
+                    "argparse.", "getopt.", "shutil.", "tempfile.", "glob.", "fnmatch.",
+                    "pickle.", "copy.", "os.", "sys.", "json.", "yaml.", "xml.", "re.",
+                    "datetime.", "time.", "pydantic.", "attrs.", "marshmallow.", "typer.",
+                    "redis.", "sqlalchemy.",
+                }
+                if any(fq.startswith(prefix) for prefix in external_module_prefixes):
+                    return None, UnresolvedReason.external.value
+
+            mcm = indices["module_class_method"].get(caller.module, {})
+            if cls in mcm:
+                if "__init__" in mcm[cls]:
+                    return mcm[cls]["__init__"], "constructor_same_module"
+                return None, UnresolvedReason.class_instantiation.value
+
+            if cls in module_class_defs.get(caller.module, set()):
+                return None, UnresolvedReason.class_instantiation.value
+            
+            if "." in fq:
+                mod = ".".join(fq.split(".")[:-1])
+                cls2 = fq.split(".")[-1]
+                mcm2 = indices["module_class_method"].get(mod, {})
+
+                # FIX: first try real __init__ resolution
+                if cls2 in mcm2:
+                    if "__init__" in mcm2[cls2]:
+                        return mcm2[cls2]["__init__"], "constructor_imported"
+                    return None, UnresolvedReason.class_instantiation.value
+
+                # fallback: class exists but no methods tracked => still instantiation (non-actionable)
+                if cls2 in module_class_defs.get(mod, set()):
+                    return None, UnresolvedReason.class_instantiation.value
+
+            if cls in class_definitions:
+                return None, UnresolvedReason.class_instantiation.value
+
+            if cls in symbol_table.symbol_aliases:
+                return None, UnresolvedReason.class_instantiation.value
+
+        # Exact qualname match
+        if normalized_call in indices["qualname"]:
+            candidates = indices["qualname"][normalized_call]
+            if len(candidates) == 1:
+                return candidates[0], "exact_qualname"
+            if len(candidates) > 1:
+                resolved = self._resolve_by_context(caller, candidates)
+                if resolved:
+                    return resolved, "exact_qualname"
+
+        # module.function / module.Class.method
+        if "." in normalized_call:
+            parts = normalized_call.split(".")
+            if len(parts) >= 2:
+                for i in range(1, len(parts)):
+                    module_part = ".".join(parts[:i])
+                    func_part = ".".join(parts[i:])
+
+                    if module_part in indices["module_func"] and func_part in indices["module_func"][module_part]:
+                        candidates = indices["module_func"][module_part][func_part]
+                        if len(candidates) == 1:
+                            return candidates[0], "symbol_table"
+                        if len(candidates) > 1:
+                            resolved = self._resolve_by_context(caller, candidates)
+                            if resolved:
+                                return resolved, "symbol_table"
+
+                    if func_part.count(".") >= 1:
+                        class_part = func_part.split(".")[-2]
+                        method_part = func_part.split(".")[-1]
+                        module_class_methods = indices["module_class_method"].get(module_part, {})
+                        if class_part in module_class_methods and method_part in module_class_methods[class_part]:
+                            return module_class_methods[class_part][method_part], "symbol_table"
+
+        # self.method / cls.method
+        if raw_call.startswith("self.") and caller.is_method and caller.class_name:
+            method_name = raw_call[5:]
+            module_class_methods = indices["module_class_method"].get(caller.module, {})
+            class_methods = module_class_methods.get(caller.class_name, {})
+            if method_name in class_methods:
+                return class_methods[method_name], "same_module"
+            if "." not in method_name:
+                return None, UnresolvedReason.baseclass_method.value
+
+        if raw_call.startswith("cls.") and caller.is_method and caller.class_name:
+            method_name = raw_call[4:]
+            module_class_methods = indices["module_class_method"].get(caller.module, {})
+            class_methods = module_class_methods.get(caller.class_name, {})
+            if method_name in class_methods:
+                return class_methods[method_name], "same_module"
+            if "." not in method_name:
+                return None, UnresolvedReason.baseclass_method.value
+
+        if raw_call.startswith("super.") or raw_call.startswith("super()"):
+            return None, UnresolvedReason.baseclass_method.value
+
+        if raw_call == "cls" and caller.is_method and caller.class_name:
+            mcm = indices["module_class_method"].get(caller.module, {})
+            if caller.class_name in mcm and "__init__" in mcm[caller.class_name]:
+                return mcm[caller.class_name]["__init__"], "constructor_same_module"
+            return None, UnresolvedReason.class_instantiation.value
+
+        # NEW: ClassName.method in same module (static/class method calls)
+        if "." in raw_call:
+            head, rest = raw_call.split(".", 1)
+            if head and head[0].isupper() and "." not in rest:
+                mcm = indices["module_class_method"].get(caller.module, {})
+                if head in mcm and rest in mcm[head]:
+                    return mcm[head][rest], "class_method_same_module"
+        
+        # NEW: receiver.method using inferred local_type_hints (supports x.m, self.x.m, self.x.y.m if hinted)
+        if "." in raw_call:
+            parts = raw_call.split(".")
+            recv = ".".join(parts[:-1])
+            meth = parts[-1]
+
+            lth = getattr(caller, "local_type_hints", None) or {}
+            if recv in lth:
+                class_ref = lth[recv]
+                fq_class = symbol_table.resolve_call(class_ref, self.config.project_package_roots)
+                
+                # Check if typed receiver is external first
+                if self._is_external_call_enhanced(class_ref, fq_class, symbol_table, indices):
+                    return None, UnresolvedReason.external.value
+
+                if "." in fq_class:
+                    mod = ".".join(fq_class.split(".")[:-1])
+                    cls_name = fq_class.split(".")[-1]
+                else:
+                    mod = caller.module
+                    cls_name = fq_class
+
+                mcm = indices["module_class_method"].get(mod, {})
+                if cls_name in mcm and meth in mcm[cls_name]:
+                    return mcm[cls_name][meth], "local_type_hint"
+        
+        # method-name fallback
+        method_name = normalized_call.split(".")[-1] if "." in normalized_call else normalized_call
+        if method_name in indices["method_name"]:
+            candidates = indices["method_name"][method_name]
+            same_module = [c for c in candidates if c.module == caller.module]
+            if len(same_module) == 1:
+                return same_module[0], "same_module"
+            if len(same_module) > 1:
+                resolved = self._resolve_by_context(caller, same_module)
+                if resolved:
+                    return resolved, "same_module"
+
+            if len(candidates) == 1 and not self._is_external_call(normalized_call):
+                return candidates[0], "method_name"
+
+        # reasons
+        if symbol_table.has_star_import and "." not in raw_call:
+            return None, UnresolvedReason.star_import.value
+        if self._is_external_call_enhanced(raw_call, normalized_call, symbol_table, indices):
+            return None, UnresolvedReason.external.value
+        # If receiver is typed as external (Path/Thread/ArgumentParser/Dict/...), classify as external
+        if "." in raw_call:
+            recv = raw_call.rsplit(".", 1)[0]
+            lth = getattr(caller, "local_type_hints", None) or {}
+            if recv in lth:
+                type_ref = (lth.get(recv) or "").strip()
+                if type_ref:
+                    fq_type = symbol_table.resolve_call(type_ref, self.config.project_package_roots)
+                    # Use enhanced external detection (handles aliases + project roots)
+                    if self._is_external_call_enhanced(type_ref, fq_type, symbol_table, indices):
+                        return None, UnresolvedReason.external.value
+
+        if self._is_dynamic_attribute_call(caller, raw_call, symbol_table, indices):
+            return None, UnresolvedReason.dynamic_attribute.value
+        if method_name in indices["method_name"] and len(indices["method_name"][method_name]) > 1:
+            return None, UnresolvedReason.ambiguous.value
+
+        if "." not in raw_call and raw_call in getattr(caller, "local_defs", []):
+            return None, UnresolvedReason.nested_local.value
+
+        if "." not in raw_call:
+            if raw_call in {"func", "processor_func", "progress_callback"}:
+                return None, UnresolvedReason.dynamic_callback.value
+            if raw_call.endswith(("_callback", "_cb", "_func")):
+                return None, UnresolvedReason.dynamic_callback.value
+            if raw_call in set(caller.inputs):
+                return None, UnresolvedReason.dynamic_callback.value
+
+        # LAST CHANCE: constructor-like names should not be actionable not_found
+        if "." not in raw_call and raw_call.lstrip("_") and raw_call.lstrip("_")[0].isupper():
+            return None, UnresolvedReason.class_instantiation.value
+        
+        # If it is a local variable (assigned in this scope), calling it is a dynamic callback/higher-order call
+        if "." not in raw_call:
+            la = set(getattr(caller, "local_assigned", []) or [])
+            if raw_call in la and raw_call not in indices.get("method_name", {}):
+                return None, UnresolvedReason.dynamic_callback.value
+
+            if raw_call in {"callback"} or raw_call.endswith(("_callback", "_cb", "_func", "_factory", "_builder", "_class")):
+                return None, UnresolvedReason.dynamic_callback.value
+        
+        return None, UnresolvedReason.not_found.value
+
+    def _resolve_by_context(self, caller: FunctionalBlock, candidates: List[FunctionalBlock]) -> Optional[FunctionalBlock]:
+        same_module = [c for c in candidates if c.module == caller.module]
+        if len(same_module) == 1:
+            return same_module[0]
+
+        same_file = [c for c in candidates if c.file_path == caller.file_path]
+        if len(same_file) == 1:
+            return same_file[0]
+
+        return None
+
+    def _is_external_call(self, call: str) -> bool:
+        import builtins
+
+        if "." not in call and hasattr(builtins, call):
+            return True
+
+        external_classes = {
+            "Path", "PurePath", "WindowsPath", "PosixPath",
+            "DataFrame", "Series",
+            "ndarray",
+            "Request", "Response",
+            "Process",
+            "Console", "Panel", "Table", "Syntax", "Text", "Tree",
+            "Progress", "TextColumn", "BarColumn", "SpinnerColumn",
+            "Prompt", "Confirm", "IntPrompt",
+            "Align", "Padding", "Group",
+        }
+        if "." not in call and call in external_classes:
+            return True
+
+        external_prefixes = [
+            "builtins.", "sys.", "os.", "pathlib.", "json.", "yaml.", "xml.",
+            "logging.", "re.", "datetime.", "time.", "collections.", "itertools.",
+            "functools.", "operator.", "typing.", "dataclasses.", "enum.",
+            "abc.", "contextlib.", "warnings.", "traceback.", "inspect.",
+            "ast.", "tokenize.", "importlib.", "pkgutil.", "subprocess.",
+            "threading.", "multiprocessing.", "asyncio.", "concurrent.",
+            "urllib.", "http.", "socket.", "ssl.", "hashlib.", "hmac.",
+            "base64.", "binascii.", "struct.", "array.", "bytes.", "string.",
+            "math.", "random.", "statistics.", "decimal.", "fractions.",
+            "sqlite3.", "csv.", "configparser.", "argparse.", "getopt.",
+            "shutil.", "tempfile.", "glob.", "fnmatch.", "linecache.",
+            "pickle.", "copyreg.", "copy.", "pprint.", "reprlib.",
+            "numpy.", "pandas.", "matplotlib.", "scipy.", "sklearn.",
+            "networkx.", "nx.", "libcst.", "cst.",
+            "requests.", "flask.", "django.", "fastapi.", "click.",
+            "pytest.", "unittest.", "mock.", "hypothesis.", "tkinter.",
+        ]
+        return any(call.startswith(prefix) for prefix in external_prefixes)
+
+    def _normalize_project_root(self, path: str) -> str:
+        for root in self.config.project_package_roots:
+            if root and path.startswith(f"{root}."):
+                return path[len(root) + 1 :]
+        return path
+
+    def _apply_block_import_hints(self, caller: FunctionalBlock, raw_call: str, normalized_call: str) -> str:
+        if normalized_call != raw_call:
+            return normalized_call
+
+        head, rest = (raw_call.split(".", 1) + [""])[:2] if "." in raw_call else (raw_call, "")
+
+        matches: List[str] = []
+        for imp in caller.imports_used:
+            # поддержим и "X", и "... .X"
+            if imp == head or imp.endswith(f".{head}"):
+                matches.append(self._normalize_project_root(imp))
+
+        if len(matches) == 1:
+            base = matches[0]
+            return f"{base}.{rest}" if rest else base
+
+        return normalized_call
+
+    def _is_project_module_name(self, name: str, indices: Dict[str, Any]) -> bool:
+        """
+        Fix: treat package roots as project modules too.
+        If indices has "pkg.sub", then "pkg" should be considered internal.
+        """
+        modules = indices.get("module", {})
+        if name in modules:
+            return True
+        prefix = name + "."
+        return any(m.startswith(prefix) for m in modules.keys())
+
+    def _is_external_call_enhanced(
+        self,
+        raw_call: str,
+        normalized_call: str,
+        symbol_table: FileSymbolTable,
+        indices: Dict[str, Any],
+    ) -> bool:
+        if self._is_external_call(normalized_call):
+            return True
+
+        head = raw_call.split(".", 1)[0] if "." in raw_call else raw_call
+
+        resolved_head = head
+        if head in symbol_table.module_aliases:
+            resolved_head = symbol_table.module_aliases[head]
+        elif head in symbol_table.symbol_aliases:
+            resolved_head = symbol_table.symbol_aliases[head].split(".", 1)[0]
+
+        if self._is_project_module_name(resolved_head, indices):
+            return False
+
+        normalized_root = normalized_call.split(".")[0] if "." in normalized_call else normalized_call
+
+        known_external_roots = {
+            "tkinter", "psutil", "gc", "uuid", "textwrap", "difflib", "cst", "sqlite3",
+            "os", "sys", "pathlib", "json", "yaml", "xml", "re", "datetime", "time",
+            "collections", "itertools", "functools", "operator", "typing", "dataclasses",
+            "enum", "abc", "contextlib", "warnings", "traceback", "inspect", "ast",
+            "tokenize", "importlib", "pkgutil", "subprocess", "threading", "multiprocessing",
+            "asyncio", "concurrent", "urllib", "http", "socket", "ssl", "hashlib", "hmac",
+            "base64", "binascii", "struct", "array", "bytes", "string", "math", "random",
+            "statistics", "decimal", "fractions", "csv", "configparser", "argparse",
+            "getopt", "shutil", "tempfile", "glob", "fnmatch", "linecache", "pickle",
+            "copyreg", "copy", "pprint", "reprlib", "weakref", "heapq", "bisect",
+            "queue", "io", "codecs", "platform", "ctypes",
+            "numpy", "pandas", "matplotlib", "scipy", "sklearn", "requests", "flask",
+            "django", "fastapi", "click", "pytest", "unittest", "mock", "hypothesis",
+            "networkx", "libcst", "rich", "typer", "pydantic", "attrs", "marshmallow",
+            "redis", "sqlalchemy",
+        }
+
+        return resolved_head in known_external_roots or normalized_root in known_external_roots
+
+    def _is_dynamic_attribute_call(
+        self,
+        caller: FunctionalBlock,
+        raw_call: str,
+        symbol_table: FileSymbolTable,
+        indices: Dict[str, Any],
+    ) -> bool:
+        if "." not in raw_call:
+            return False
+
+        parts = raw_call.split(".")
+        head = parts[0]
+
+        if head in ("self", "cls"):
+            return len(parts) >= 3
+
+        if head in symbol_table.module_aliases or head in symbol_table.symbol_aliases:
+            return False
+
+        if head and head[0].isupper():
+            if len(parts) >= 3:
+                return True
+            classes_in_module = indices["module_class_method"].get(caller.module, {})
+            if head not in classes_in_module:
+                return True
+            return False
+
+        return True
+
+    # --- старый простой граф оставил как fallback ---
+
+    def _build_call_graph(self, blocks: List[FunctionalBlock]) -> None:
+        call_edges: List[Tuple[str, str]] = []
+        unresolved_calls: List[Dict[str, Any]] = []
+
+        method_to_blocks: Dict[str, List[FunctionalBlock]] = {}
+        qualname_to_blocks: Dict[str, List[FunctionalBlock]] = {}
+
+        for block in blocks:
+            block.calls = []
+            block.called_by = []
+
+            method_to_blocks.setdefault(block.method_name, []).append(block)
+            qualname_to_blocks.setdefault(block.qualname, []).append(block)
+
+        for block in blocks:
+            for raw_call in block.raw_calls:
+                resolved_target: Optional[FunctionalBlock] = None
+
+                if raw_call in qualname_to_blocks:
+                    candidates = qualname_to_blocks[raw_call]
+                    if len(candidates) == 1:
+                        resolved_target = candidates[0]
+                    else:
+                        resolved_target = self._resolve_ambiguous_call(block, raw_call, candidates)
+
+                elif raw_call in method_to_blocks:
+                    candidates = method_to_blocks[raw_call]
+                    if len(candidates) == 1:
+                        resolved_target = candidates[0]
+                    else:
+                        resolved_target = self._resolve_ambiguous_call(block, raw_call, candidates)
+
+                else:
+                    if "." in raw_call:
+                        method_part = raw_call.split(".")[-1]
+                        if method_part in method_to_blocks:
+                            candidates = method_to_blocks[method_part]
+                            resolved_target = self._resolve_ambiguous_call(block, raw_call, candidates)
+
+                if resolved_target and resolved_target.id != block.id:
+                    block.calls.append(resolved_target.id)
+                    resolved_target.called_by.append(block.id)
+                    call_edges.append((block.id, resolved_target.id))
+                else:
+                    unresolved_calls.append(
+                        {
+                            "caller_id": block.id,
+                            "raw_call": raw_call,
+                            "file": block.file_path,
+                            "lineno": block.lineno,
+                            "reason": UnresolvedReason.not_found.value if not resolved_target else UnresolvedReason.self_call.value,
+                        }
+                    )
+
+        self._call_edges = call_edges
+        self._unresolved_calls = unresolved_calls
+
+    def _resolve_ambiguous_call(
+        self, caller: FunctionalBlock, raw_call: str, candidates: List[FunctionalBlock]
+    ) -> Optional[FunctionalBlock]:
+        same_module_candidates = [c for c in candidates if c.module == caller.module]
+        if len(same_module_candidates) == 1:
+            return same_module_candidates[0]
+
+        same_file_candidates = [c for c in candidates if c.file_path == caller.file_path]
+        if len(same_file_candidates) == 1:
+            return same_file_candidates[0]
+
+        return None
+
+    def _identify_capabilities(self, blocks: List[FunctionalBlock]) -> List[Capability]:
+        capabilities: List[Capability] = []
+
+        # Fix: key as tuple to avoid underscore-split bugs
+        capability_groups: Dict[Tuple[str, str], List[FunctionalBlock]] = {}
+        for block in blocks:
+            key = (block.category or "", block.subcategory or "")
+            capability_groups.setdefault(key, []).append(block)
+
+        for (category, subcategory), group_blocks in capability_groups.items():
+            if len(group_blocks) >= 2:
+                name = f"{category}:{subcategory}" if subcategory else category
+                capability = Capability(
+                    name=name,
+                    description=f"{category.title()} capability for {subcategory}" if subcategory else f"{category.title()} capability",
+                    blocks=[block.id for block in group_blocks],
+                    owners=[self._suggest_owner_module(group_blocks)],
+                )
+                capabilities.append(capability)
+
+        return capabilities
+
+    def _suggest_owner_module(self, blocks: List[FunctionalBlock]) -> str:
+        module_counts: Dict[str, int] = {}
+        for block in blocks:
+            if not block.module:
+                continue
+            module_counts[block.module] = module_counts.get(block.module, 0) + 1
+
+        if module_counts:
+            return max(module_counts, key=module_counts.get)
+
+        return "unified"
+
+    def update_functional_map(
+        self,
+        functional_map: ProjectFunctionalMap,
+        new_blocks: List[FunctionalBlock],
+    ) -> ProjectFunctionalMap:
+        self.logger.info(f"Updating functional map with {len(new_blocks)} new blocks")
+
+        for b in new_blocks:
+            b.file_path = _safe_resolve_path(b.file_path)
+            b.id = make_block_id(
+                project_root=functional_map.project_root,
+                file_path=b.file_path,
+                module=b.module,
+                qualname=b.qualname,
+                lineno=b.lineno,
+            )
+
+        categorized_new_blocks = self.categorizer.categorize_blocks(new_blocks)
+
+        all_blocks = list(functional_map.blocks.values()) + categorized_new_blocks
+
+        # Prefer enhanced call graph if enabled (build tables lazily for involved files)
+        if self.config.enable_symbol_table_resolution:
+            file_symbol_tables: Dict[str, FileSymbolTable] = {}
+            file_class_definitions: Dict[str, Set[str]] = {}
+            for b in all_blocks:
+                fk = _safe_resolve_path(b.file_path)
+                if fk in file_symbol_tables:
+                    continue
+                try:
+                    src = Path(fk).read_text(encoding="utf-8")
+                    if src.strip():
+                        tree = ast.parse(src, filename=fk)
+                        st, classes = build_file_symbol_table(tree, b.module)
+                        file_symbol_tables[fk] = st
+                        file_class_definitions[fk] = classes
+                    else:
+                        file_symbol_tables[fk] = FileSymbolTable(current_module=b.module)
+                        file_class_definitions[fk] = set()
+                except Exception:
+                    file_symbol_tables[fk] = FileSymbolTable(current_module=b.module)
+                    file_class_definitions[fk] = set()
+
+            self._build_call_graph_enhanced(all_blocks, file_symbol_tables, file_class_definitions)
+        else:
+            self._build_call_graph(all_blocks)
+
+        capabilities = self._identify_capabilities(all_blocks)
+
+        affected_categories = {f"{b.category}:{b.subcategory}" for b in categorized_new_blocks}
+
+        existing_clusters = []
+        blocks_to_recluster: List[FunctionalBlock] = []
+
+        for cluster in functional_map.clusters.values():
+            cluster_category = f"{cluster.category}:{cluster.subcategory}"
+            if cluster_category in affected_categories:
+                blocks_to_recluster.extend(
+                    [functional_map.blocks[bid] for bid in cluster.blocks if bid in functional_map.blocks]
+                )
+            else:
+                existing_clusters.append(cluster)
+
+        blocks_to_recluster.extend(categorized_new_blocks)
+        # dedupe
+        blocks_to_recluster = list({b.id: b for b in blocks_to_recluster}.values())
+
+        new_clusters = self.clusterer.cluster_blocks(blocks_to_recluster)
+        all_clusters = existing_clusters + new_clusters
+
+        updated_map = ProjectFunctionalMap(
+            project_root=functional_map.project_root,
+            timestamp=datetime.now().isoformat(),
+            blocks={block.id: block for block in all_blocks},
+            capabilities={cap.name: cap for cap in capabilities},
+            clusters={cluster.id: cluster for cluster in all_clusters},
+            call_edges=getattr(self, "_call_edges", []),
+            unresolved_calls=getattr(self, "_unresolved_calls", []),
+        )
+
+        if hasattr(updated_map, "recompute_stats"):
+            updated_map.recompute_stats()  # type: ignore[attr-defined]
+
+        self.logger.info(f"Updated functional map: {updated_map.total_blocks} blocks total")
+        return updated_map

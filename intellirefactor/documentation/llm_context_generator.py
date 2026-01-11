@@ -293,7 +293,7 @@ class {main_class["name"]}:
     def _extract_main_classes(self, tree: ast.AST, source_code: str) -> List[Dict[str, Any]]:
         """Extract main classes with their details."""
         classes = []
-        lines = source_code.split("\n")
+        
 
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
@@ -543,15 +543,9 @@ class {main_class["name"]}:
 
     def _extract_docstring(self, node: ast.AST) -> Optional[str]:
         """Extract docstring from a node."""
-        if (
-            hasattr(node, "body")
-            and node.body
-            and isinstance(node.body[0], ast.Expr)
-            and isinstance(node.body[0].value, ast.Constant)
-            and isinstance(node.body[0].value.value, str)
-        ):
-            return node.body[0].value.value.strip()
-        return None
+        # [IR_DELEGATED] Auto-generated wrapper (functional decomposition)
+        from intellirefactor.unified.documentation import extract_docstring as __ir_unified_extract_docstring
+        return __ir_unified_extract_docstring(self, node)
 
     def _infer_module_purpose(self, analysis_data: Dict[str, Any]) -> str:
         """Infer the module's purpose from analysis data."""

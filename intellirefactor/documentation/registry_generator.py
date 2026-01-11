@@ -572,15 +572,9 @@ Failed to generate registry: {str(e)}
 
     def _extract_docstring(self, node: ast.AST) -> Optional[str]:
         """Extract docstring from a node."""
-        if (
-            hasattr(node, "body")
-            and node.body
-            and isinstance(node.body[0], ast.Expr)
-            and isinstance(node.body[0].value, ast.Constant)
-            and isinstance(node.body[0].value.value, str)
-        ):
-            return node.body[0].value.value.strip()
-        return None
+        # [IR_DELEGATED] Auto-generated wrapper (functional decomposition)
+        from intellirefactor.unified.documentation import extract_docstring as __ir_unified_extract_docstring
+        return __ir_unified_extract_docstring(self, node)
 
     def _extract_class_attributes(self, node: ast.ClassDef) -> List[str]:
         """Extract class attributes."""

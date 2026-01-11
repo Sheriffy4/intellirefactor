@@ -21,8 +21,11 @@ from datetime import datetime
 from dataclasses import dataclass
 from collections import defaultdict
 import json
+import re
 
 from .index_schema import IndexSchema
+
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass
@@ -457,7 +460,8 @@ class ContextAwareVisitor(ast.NodeVisitor):
         for child in ast.walk(node):
             node_types.append(type(child).__name__)
         fingerprint_str = "|".join(node_types)  # Keep order for structure
-        return hashlib.md5(fingerprint_str.encode("utf-8")).hexdigest()[:16]
+        # 16 hex chars, stable, non-cryptographic fingerprint (BLAKE2b digest_size=8)
+        return hashlib.blake2b(fingerprint_str.encode("utf-8"), digest_size=8).hexdigest()
 
     def _calculate_token_fingerprint(self, node: ast.AST) -> str:
         try:
@@ -465,10 +469,10 @@ class ContextAwareVisitor(ast.NodeVisitor):
                 source = ast.unparse(node)
                 # Normalize whitespace
                 source = " ".join(source.split())
-                return hashlib.md5(source.encode("utf-8")).hexdigest()[:16]
-        except:
-            pass
-        return ""
+                return hashlib.blake2b(source.encode("utf-8"), digest_size=8).hexdigest()
+        except Exception:
+            self.logger.debug("Failed to build token fingerprint", exc_info=True)
+            return ""
 
     def _determine_semantic_category(self, name: str) -> str:
         name_lower = name.lower()
@@ -711,11 +715,12 @@ class IndexBuilder:
                 continue
 
             # Query DB for this chunk
-            placeholders = ",".join("?" * len(rel_paths))
-            cursor = self.conn.execute(
-                f"SELECT file_path, content_hash FROM files WHERE file_path IN ({placeholders})",
-                rel_paths,
+            placeholders = ",".join(["?"] * len(rel_paths))
+            sql = (  # nosec B608
+                "SELECT file_path, content_hash FROM files "
+                "WHERE file_path IN (" + placeholders + ")"
             )
+            cursor = self.conn.execute(sql, rel_paths)
 
             db_hashes = {row[0]: row[1] for row in cursor.fetchall()}
 
@@ -1078,9 +1083,15 @@ class IndexBuilder:
             "analysis_runs",
         ]
 
+        def quote_ident(name: str) -> str:
+            # sqlite identifiers can't be parametrized; validate + quote
+            if not _IDENT_RE.match(name):
+                raise ValueError(f"Invalid identifier: {name!r}")
+            return f'"{name}"'
+
         for table in tables_to_clear:
             try:
-                self.conn.execute(f"DELETE FROM {table}")
+                self.conn.execute("DELETE FROM " + quote_ident(table))  # nosec B608
             except sqlite3.OperationalError as e:
                 # Table might not exist, which is fine
                 self.logger.debug(f"Could not clear table {table}: {e}")

@@ -25,7 +25,7 @@ import logging
 
 # Optional YAML support
 try:
-    import yaml
+    import yaml  # type: ignore[import-untyped]
 
     YAML_AVAILABLE = True
 except ImportError:
@@ -38,15 +38,6 @@ logger = logging.getLogger(__name__)
 _MODELS_AVAILABLE = False
 try:
     from .models import Evidence, FileReference
-    from .audit_models import AuditResult, AuditFinding, AuditSeverity
-    from .block_clone_detector import CloneGroup, CloneType, ExtractionStrategy
-    from .architectural_smell_detector import (
-        ArchitecturalSmell,
-        SmellType,
-        SmellSeverity,
-    )
-    from .unused_code_detector import UnusedCodeFinding, UnusedCodeType, ConfidenceLevel
-    from .responsibility_clusterer import ClusteringResult, ResponsibilityCluster
 
     _MODELS_AVAILABLE = True
 except ImportError as e:
@@ -54,9 +45,6 @@ except ImportError as e:
     # Define placeholders to prevent NameErrors during runtime checks
     Evidence = None
     FileReference = None
-    AuditResult = None
-    AuditFinding = None
-    CloneGroup = None
 
 
 # ============================================================================
@@ -615,8 +603,11 @@ class RefactoringDecisionEngine:
                                         line_end=getattr(inst, "line_end", inst.line_start),
                                     )
                                 )
-                            except:
-                                pass
+                            except Exception:
+                                logger.debug(
+                                    "Failed to build FileReference for clone instance",
+                                    exc_info=True,
+                                )
 
                     evidence_list.append(
                         Evidence(

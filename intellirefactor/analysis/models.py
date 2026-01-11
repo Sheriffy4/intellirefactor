@@ -168,7 +168,9 @@ class DeepMethodInfo:
 
     def get_responsibility_score(self) -> float:
         """Calculate responsibility diversity score (higher = more responsibilities)."""
-        return len(self.responsibility_markers) / len(ResponsibilityMarker)
+        # [IR_DELEGATED] Auto-generated wrapper (functional decomposition)
+        from intellirefactor.unified.analysis import get_responsibility_score as __ir_unified_get_responsibility_score
+        return __ir_unified_get_responsibility_score(self)
 
     def has_side_effects(self) -> bool:
         """Check if method has any side effects."""
@@ -475,9 +477,9 @@ def create_file_reference(file_path: str, line_start: int, line_end: int) -> Fil
 def create_evidence(
     description: str,
     confidence: float,
-    file_references: List[FileReference] = None,
-    code_snippets: List[str] = None,
-    metadata: Dict[str, Any] = None,
+    file_references: Optional[List[FileReference]] = None,
+    code_snippets: Optional[List[str]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> Evidence:
     """Create evidence with validation."""
     return Evidence(

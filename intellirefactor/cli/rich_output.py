@@ -22,15 +22,14 @@ try:
         TimeElapsedColumn,
     )
     from rich.panel import Panel
-    from rich.text import Text
+   
     from rich.syntax import Syntax
     from rich.columns import Columns
     from rich.align import Align
-    from rich.rule import Rule
+   
     from rich.prompt import Prompt, Confirm
     from rich.status import Status
-    from rich.live import Live
-    from rich.layout import Layout
+   
     from rich.markdown import Markdown
 
     RICH_AVAILABLE = True

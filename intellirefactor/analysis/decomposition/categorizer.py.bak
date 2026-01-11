@@ -1,0 +1,610 @@
+"""
+Function Categorizer
+
+Assigns category/subcategory to FunctionalBlocks based on configurable rules
+including name patterns, import markers, and call neighborhoods.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import re
+from dataclasses import replace
+from typing import Dict, List, Optional, Set, Tuple
+
+from .models import FunctionalBlock, DecompositionConfig
+
+
+logger = logging.getLogger(__name__)
+
+
+class FunctionCategorizer:
+    """
+    Categorizes functional blocks based on configurable rules.
+    """
+
+    def __init__(self, config: Optional[DecompositionConfig] = None):
+        self.config = config or DecompositionConfig.default()
+        self.logger = logger
+
+        self._compile_patterns()
+
+        self._import_categories: Dict[str, Tuple[str, str]] = {
+            "logging": ("telemetry", "logging"),
+            "log": ("telemetry", "logging"),
+            "re": ("parsing", "regex"),
+            "regex": ("parsing", "regex"),
+            "json": ("serialization", "json"),
+            "yaml": ("serialization", "yaml"),
+            "xml": ("serialization", "xml"),
+            "csv": ("serialization", "csv"),
+            "sqlite3": ("persistence", "database"),
+            "psycopg2": ("persistence", "database"),
+            "redis": ("persistence", "cache"),
+            "requests": ("networking", "http"),
+            "urllib": ("networking", "http"),
+            "socket": ("networking", "socket"),
+            "threading": ("concurrency", "threading"),
+            "asyncio": ("concurrency", "async"),
+            "multiprocessing": ("concurrency", "process"),
+            "argparse": ("cli", "argument_parsing"),
+            "click": ("cli", "framework"),
+            "flask": ("web", "framework"),
+            "django": ("web", "framework"),
+            "fastapi": ("web", "framework"),
+        }
+
+        self._literal_domains: Dict[str, Tuple[str, str]] = {
+            "strategy": ("domain", "strategy"),
+            "attack": ("domain", "attack"),
+            "bypass": ("domain", "bypass"),
+            "config": ("configuration", "settings"),
+            "settings": ("configuration", "settings"),
+            "cache": ("caching", "storage"),
+            "session": ("session", "management"),
+            "auth": ("security", "authentication"),
+            "jwt": ("security", "token"),
+            "bearer": ("security", "token"),
+            "access_token": ("security", "token"),
+            "refresh_token": ("security", "token"),
+            "password": ("security", "credential"),
+            "credential": ("security", "credential"),
+            "database": ("persistence", "database"),
+            "sql": ("persistence", "sql"),
+            "query": ("persistence", "query"),
+        }
+
+    def _compile_patterns(self) -> None:
+        """Compile regex patterns from config rules (defensive)."""
+        self._name_patterns: List[Tuple[re.Pattern, str, str]] = []
+        self._import_patterns: List[Tuple[re.Pattern, str, str]] = []
+        self._path_patterns: List[Tuple[re.Pattern, str, str]] = []
+        self._module_patterns: List[Tuple[re.Pattern, str, str]] = []
+
+        for rule in self.config.category_rules:
+            try:
+                if "match_name" in rule:
+                    self._name_patterns.append(
+                        (re.compile(rule["match_name"]), rule["category"], rule.get("subcategory", "generic"))
+                    )
+                if "match_import" in rule:
+                    self._import_patterns.append(
+                        (re.compile(rule["match_import"]), rule["category"], rule.get("subcategory", "generic"))
+                    )
+                if "match_path" in rule:
+                    self._path_patterns.append(
+                        (re.compile(rule["match_path"]), rule["category"], rule.get("subcategory", "generic"))
+                    )
+                if "match_module" in rule:
+                    self._module_patterns.append(
+                        (re.compile(rule["match_module"]), rule["category"], rule.get("subcategory", "generic"))
+                    )
+            except re.error as e:
+                self.logger.warning(f"Bad categorization regex in rule={rule}: {e}")
+
+    def categorize_blocks(self, blocks: List[FunctionalBlock]) -> List[FunctionalBlock]:
+        """Categorize a list of functional blocks."""
+        call_graph = self._build_call_graph(blocks)
+
+        categorized: List[FunctionalBlock] = []
+        for block in blocks:
+            categorized.append(self._categorize_single_block(block, call_graph))
+
+        self.logger.info(f"Categorized {len(categorized)} blocks")
+        return categorized
+
+    def _categorize_single_block(self, block: FunctionalBlock, call_graph: Dict[str, Set[str]]) -> FunctionalBlock:
+        """
+        Categorize a single functional block.
+
+        FIX: use dataclasses.replace instead of manual FunctionalBlock(...) construction
+        (to avoid breakage when model fields/order change).
+        """
+        categorized = replace(block)
+
+        category, subcategory, tags = self._apply_categorization_rules(categorized, call_graph)
+
+        categorized.category = category
+        categorized.subcategory = subcategory
+
+        existing_tags = list(getattr(block, "tags", []) or [])
+        categorized.tags = sorted(set(existing_tags) | set(tags))
+
+        categorized.semantic_fingerprint = self._generate_semantic_fingerprint(categorized)
+        return categorized
+
+    def _apply_categorization_rules(
+        self, block: FunctionalBlock, call_graph: Dict[str, Set[str]]
+    ) -> Tuple[str, str, List[str]]:
+        category = "unknown"
+        subcategory = "generic"
+
+        # 1) Path
+        c, s = self._categorize_by_path(block)
+        if c != "unknown":
+            category, subcategory = c, s
+
+        # 2) Module
+        c, s = self._categorize_by_module(block)
+        if c != "unknown" and category == "unknown":
+            category, subcategory = c, s
+
+        # 3) Name
+        c, s = self._categorize_by_name(block)
+        if c != "unknown" and category == "unknown":
+            category, subcategory = c, s
+
+        # 4) Imports (evidence-based)
+        c, s = self._categorize_by_imports(block)
+        if c != "unknown" and category == "unknown":
+            category, subcategory = c, s
+
+        # 5) Literals
+        c, s = self._categorize_by_literals(block)
+        if c != "unknown" and category == "unknown":
+            category, subcategory = c, s
+
+        # 6) Neighborhood (currently conservative / mostly no-op)
+        c, s = self._categorize_by_neighborhood(block, call_graph)
+        if c != "unknown" and category == "unknown":
+            category, subcategory = c, s
+
+        tags = self._generate_tags(block, category, subcategory)
+        return category, subcategory, tags
+
+    def _categorize_by_name(self, block: FunctionalBlock) -> Tuple[str, str]:
+        name = (block.method_name or "").lower()
+
+        for pattern, category, subcategory in self._name_patterns:
+            if pattern.match(name):
+                return category, subcategory
+
+        # Domain-strong patterns (project-specific)
+        if name == "_build_index" or name.startswith("index_") or name.startswith("schema_"):
+            return "indexing", "generic"
+        if name.startswith("hook_") or name == "execute_hooks":
+            return "plugins", "hooks"
+        if name.startswith("generate_") and "report" in name:
+            return "reporting", "generic"
+        
+        if name.startswith(("parse", "extract", "decode")):
+            return "parsing", "generic"
+        if name.startswith(("validate", "check", "verify", "sanitize")):
+            return "validation", "generic"
+        if name.startswith(("log", "debug", "info", "warn", "warning", "error")):
+            return "telemetry", "logging"
+        if name.startswith(("save", "load", "store", "fetch")) and self._has_persistence_context(block):
+            return "persistence", "generic"
+        if name.startswith(("format", "render", "display", "show")):
+            return "presentation", "formatting"
+        if name.startswith(("handle", "process", "execute", "run")):
+            return "orchestration", "execution"
+        if name.startswith(("create", "build", "make", "generate")):
+            return "factory", "creation"
+        if name.startswith(("transform", "convert", "map", "filter")):
+            return "transformation", "generic"
+        if name.startswith(("cache", "memoize")):
+            return "caching", "storage"
+        if name.startswith(("config", "setup", "init")):
+            return "configuration", "initialization"
+        if name in ("to_dict", "from_dict"):
+            return "serialization", "dict"
+        if name.startswith(("serialize", "deserialize")):
+            return "serialization", "generic"
+        if name.startswith(("dump", "load")) and self._has_serialization_context(block):
+            return "serialization", "generic"
+
+        # Data access patterns
+        if name.startswith(("get_", "fetch_", "retrieve_", "load_", "read_")):
+            return "data_access", "read"
+        if name.startswith(("set_", "update_", "write_", "save_", "store_")):
+            return "data_access", "write"
+        if name.startswith(("delete_", "remove_", "clear_", "drop_")):
+            return "data_access", "delete"
+        if name.startswith(("find_", "search_", "query_", "lookup_")):
+            return "data_access", "query"
+
+        # Lifecycle patterns
+        if name.startswith(("cleanup", "teardown", "dispose", "close", "shutdown")):
+            return "lifecycle", "cleanup"
+        if name.startswith(("start", "begin", "open", "connect")):
+            return "lifecycle", "startup"
+        if name.startswith(("stop", "end", "finish", "disconnect")):
+            return "lifecycle", "shutdown"
+
+        # Analysis patterns
+        if name.startswith(("calculate_", "compute_", "estimate_", "measure_")):
+            return "computation", "calculation"
+        if name.startswith(("analyze_", "assess_", "evaluate_", "score_")):
+            return "analysis", "assessment"
+        if name.startswith(("detect_", "identify_", "recognize_", "classify_")):
+            return "analysis", "detection"
+        if name.startswith(("compare_", "diff_", "match_", "align_")):
+            return "analysis", "comparison"
+
+        # Predicate patterns
+        if name.startswith(("is_", "has_", "can_", "should_", "must_")):
+            return "validation", "predicate"
+
+        # Event patterns
+        if name.startswith(("on_", "handle_", "dispatch_")):
+            return "event_handling", "handler"
+        if name.startswith(("emit_", "trigger_", "fire_", "notify_")):
+            return "event_handling", "emitter"
+
+        # Dunder methods
+        if name.startswith("__") and name.endswith("__"):
+            return "dunder", name.strip("_")
+
+        return "unknown", "generic"
+
+    def _has_persistence_context(self, block: FunctionalBlock) -> bool:
+        persistence_imports = ["sqlite3", "psycopg2", "redis", "pymongo", "sqlalchemy"]
+        for imp in block.imports_used:
+            low = imp.lower()
+            if any(p in low for p in persistence_imports):
+                return True
+
+        persistence_calls = ["execute", "commit", "rollback", "query", "insert", "update", "delete"]
+        for call in block.raw_calls:
+            if any(p in call.lower() for p in persistence_calls):
+                return True
+
+        db_keywords = ["select", "insert", "update", "delete", "create table", "drop table"]
+        for literal in block.literals:
+            if any(k in literal.lower() for k in db_keywords):
+                return True
+
+        return False
+
+    def _has_serialization_context(self, block: FunctionalBlock) -> bool:
+        serialization_imports = ["json", "yaml", "pickle", "xml", "csv", "msgpack"]
+        for imp in block.imports_used:
+            if any(s in imp.lower() for s in serialization_imports):
+                return True
+
+        serialization_calls = ["dumps", "loads", "dump", "load", "encode", "decode"]
+        for call in block.raw_calls:
+            if any(s in call.lower() for s in serialization_calls):
+                return True
+
+        serialization_keywords = ["json", "yaml", "xml", "csv"]
+        for literal in block.literals:
+            if any(k in literal.lower() for k in serialization_keywords):
+                return True
+
+        return False
+
+    def _categorize_by_imports(self, block: FunctionalBlock) -> Tuple[str, str]:
+        """
+        Categorize by imports only when there's evidence of usage.
+        Uses imports_used (evidence-based).
+        """
+        for import_name in block.imports_used:
+            c, s = self._check_import_category_with_evidence(import_name, block)
+            if c != "unknown":
+                return c, s
+
+        # Fallback for telemetry if there is evidence AND logging in context
+        if (
+            self._has_telemetry_evidence(block)
+            and getattr(block, "imports_context", None)
+            and any("logging" in imp for imp in block.imports_context)
+        ):
+            return "telemetry", "logging"
+
+        return "unknown", "generic"
+
+    def _check_import_category_with_evidence(self, import_name: str, block: FunctionalBlock) -> Tuple[str, str]:
+        base = import_name.split(".", 1)[0]
+
+        # Configured patterns
+        for pattern, category, subcategory in self._import_patterns:
+            if pattern.match(import_name) or pattern.match(base):
+                if category == "telemetry":
+                    return (category, subcategory) if self._has_telemetry_evidence(block) else ("unknown", "generic")
+                return category, subcategory
+
+        # Built-in mappings (base module is the main signal)
+        for key in (import_name, base):
+            if key in self._import_categories:
+                category, subcategory = self._import_categories[key]
+                if category == "telemetry":
+                    return (category, subcategory) if self._has_telemetry_evidence(block) else ("unknown", "generic")
+                return category, subcategory
+
+        # Partial matches (careful with short tokens)
+        for known_import, (category, subcategory) in self._import_categories.items():
+            if len(known_import) <= 2:
+                continue
+            if (
+                import_name.startswith(known_import)
+                or import_name.endswith(known_import)
+                or f".{known_import}" in import_name
+                or f"{known_import}." in import_name
+            ):
+                if category == "telemetry":
+                    return (category, subcategory) if self._has_telemetry_evidence(block) else ("unknown", "generic")
+                return category, subcategory
+
+        return "unknown", "generic"
+
+    def _has_telemetry_evidence(self, block: FunctionalBlock) -> bool:
+        telemetry_patterns = [
+            "logging.",
+            "logger.",
+            "getLogger",
+            "basicConfig",
+            ".debug",
+            ".info",
+            ".warning",
+            ".error",
+            ".exception",
+            ".critical",
+        ]
+        for call in block.raw_calls:
+            for pattern in telemetry_patterns:
+                if pattern in call:
+                    return True
+
+        logging_methods = {"debug", "info", "warning", "error", "exception", "critical", "log"}
+        return any(call in logging_methods for call in block.raw_calls)
+
+    def _categorize_by_literals(self, block: FunctionalBlock) -> Tuple[str, str]:
+        for literal in block.literals:
+            literal_lower = literal.lower()
+
+            for keyword, (category, subcategory) in self._literal_domains.items():
+                if keyword in literal_lower:
+                    return category, subcategory
+
+            if self._is_likely_regex(literal):
+                return "parsing", "regex"
+
+            if any(word in literal_lower for word in ["select", "insert", "update", "delete", "from", "where"]):
+                return "persistence", "sql"
+
+            if any(proto in literal_lower for proto in ["http://", "https://", "ftp://"]):
+                return "networking", "url"
+
+        return "unknown", "generic"
+
+    def _is_likely_regex(self, literal: str) -> bool:
+        if len(literal) < 3:
+            return False
+
+        strong_indicators = ["[", "]", r"\b", r"\d", r"\w", r"\s", ".*", ".+", ".?", "^", "$", "|"]
+        if any(ind in literal for ind in strong_indicators):
+            return True
+
+        regex_patterns = [
+            r"\\\w",
+            r"\[[^\]]+\]",
+            r"\([^)]*\)",
+            r"\.\*",
+            r"\.\+",
+            r"\.\?",
+        ]
+        for pattern in regex_patterns:
+            if re.search(pattern, literal):
+                return True
+
+        return False
+
+    def _categorize_by_neighborhood(self, block: FunctionalBlock, call_graph: Dict[str, Set[str]]) -> Tuple[str, str]:
+        # Currently conservative: without a 2-pass categorization, neighborhood voting is unreliable.
+        _ = call_graph.get(block.id, set())
+        return "unknown", "generic"
+
+    def _generate_tags(self, block: FunctionalBlock, category: str, subcategory: str) -> List[str]:
+        tags: List[str] = []
+
+        if block.loc > 50:
+            tags.append("large")
+        elif block.loc < 5:
+            tags.append("small")
+
+        if block.cyclomatic > 10:
+            tags.append("complex")
+        elif block.cyclomatic == 1:
+            tags.append("simple")
+
+        tags.append("private" if block.method_name.startswith("_") else "public")
+        tags.append("method" if block.is_method else "function")
+
+        if "test" in block.method_name.lower():
+            tags.append("test")
+        if any(w in block.method_name.lower() for w in ["legacy", "old", "deprecated"]):
+            tags.append("legacy")
+        if any(w in block.method_name.lower() for w in ["main", "entry", "start"]):
+            tags.append("entry_point")
+
+        if "cli" in block.module.lower() or "command" in block.module.lower():
+            tags.append("cli")
+
+        if len(block.called_by) > 5:
+            tags.append("hotpath")
+
+        return sorted(set(tags))
+
+    def _generate_semantic_fingerprint(self, block: FunctionalBlock) -> str:
+        features = [
+            block.category,
+            block.subcategory,
+            str(len(block.calls)),
+            str(len(block.called_by)),
+            str(len(block.imports_used)),
+            str(block.loc // 10),
+            str(block.cyclomatic // 5),
+        ]
+
+        features.extend(sorted(block.tags))
+        features.extend(sorted(block.literals)[:5])  # deterministic
+
+        fingerprint_str = "|".join(features)
+        return hashlib.sha256(fingerprint_str.encode("utf-8")).hexdigest()
+
+    def _build_call_graph(self, blocks: List[FunctionalBlock]) -> Dict[str, Set[str]]:
+        """Build call graph from raw_calls for neighborhood analysis (conservative resolution)."""
+        call_graph: Dict[str, Set[str]] = {}
+
+        # Fix: qualname collisions -> keep list
+        qualname_to_ids: Dict[str, List[str]] = {}
+        method_to_ids: Dict[str, List[str]] = {}
+        id_to_module = {b.id: b.module for b in blocks}
+
+        for b in blocks:
+            qualname_to_ids.setdefault(b.qualname, []).append(b.id)
+            method_to_ids.setdefault(b.method_name, []).append(b.id)
+
+        for b in blocks:
+            callees: Set[str] = set()
+
+            for raw_call in b.raw_calls:
+                # Exact qualname
+                if raw_call in qualname_to_ids:
+                    cands = qualname_to_ids[raw_call]
+                    if len(cands) == 1:
+                        callees.add(cands[0])
+                    else:
+                        same_module = [cid for cid in cands if id_to_module.get(cid) == b.module]
+                        if len(same_module) == 1:
+                            callees.add(same_module[0])
+
+                # Exact method name
+                elif raw_call in method_to_ids:
+                    cands = method_to_ids[raw_call]
+                    if len(cands) == 1:
+                        callees.add(cands[0])
+                    else:
+                        same_module = [cid for cid in cands if id_to_module.get(cid) == b.module]
+                        if len(same_module) == 1:
+                            callees.add(same_module[0])
+
+                # Attribute call -> use method part
+                elif "." in raw_call:
+                    method_part = raw_call.split(".")[-1]
+                    if method_part in method_to_ids:
+                        cands = method_to_ids[method_part]
+                        if len(cands) == 1:
+                            callees.add(cands[0])
+
+            call_graph[b.id] = callees
+
+        return call_graph
+
+    def _categorize_by_path(self, block: FunctionalBlock) -> Tuple[str, str]:
+        """Categorize by file path patterns."""
+        file_path = (block.file_path or "").lower()
+
+        for pattern, category, subcategory in self._path_patterns:
+            if pattern.search(file_path):
+                return category, subcategory
+
+        if "test" in file_path or "_test" in file_path or "tests" in file_path:
+            return "testing", "unit"
+        
+        # Repo-aware path routing (reduces unknown:generic massively)
+        # Keep it simple: domain = folder, subcategory = generic
+        # NOTE: use "/analysis/" style to avoid false positives on filenames.
+        p = file_path.replace("\\", "/")
+
+        # tests уже обработаны выше
+
+        # analysis subdomains (specific first)
+        if "/analysis/decomposition/" in p:
+            return "analysis", "decomposition"
+        if "/analysis/expert/" in p:
+            return "analysis", "expert"
+
+        # indexing: файлы вида analysis/index_store.py, analysis/index_schema.py и т.п.
+        if "/analysis/index_" in p or "/analysis/index/" in p:
+            return "analysis", "indexing"
+
+        # workflow: минимально-явные файлы (не по общим словам, чтобы не “размазать”)
+        if p.endswith("/analysis/debug_cycle_manager.py") or p.endswith("/analysis/incremental_debugging_workflow.py"):
+            return "analysis", "workflow"
+        if p.endswith("/analysis/lazy_loader.py") or p.endswith("/analysis/refactoring_orchestrator.py"):
+            return "analysis", "workflow"
+
+        # analysis fallback
+        if "/analysis/" in p:
+            return "analysis", "generic"
+        if "/refactoring/" in p:
+            return "refactoring", "generic"
+        if "/knowledge/" in p:
+            return "knowledge", "generic"
+        if "/documentation/" in p:
+            return "documentation", "generic"
+        if "/plugins/" in p:
+            return "plugins", "generic"
+        
+        if "config" in file_path or "settings" in file_path:
+            return "configuration", "files"
+        if "model" in file_path:
+            return "domain", "models"
+        if "controller" in file_path or "handler" in file_path:
+            return "web", "controllers"
+        if "service" in file_path:
+            return "business", "services"
+        if "util" in file_path or "helper" in file_path:
+            return "utility", "helpers"
+
+        return "unknown", "generic"
+
+    def _categorize_by_module(self, block: FunctionalBlock) -> Tuple[str, str]:
+        """Categorize by module name patterns."""
+        module = (block.module or "").lower()
+
+        for pattern, category, subcategory in self._module_patterns:
+            if pattern.search(module):
+                return category, subcategory
+
+        if "test" in module or "tests" in module:
+            return "testing", "unit"
+        
+        # Repo-aware module routing
+        if module.startswith("analysis."):
+            return "analysis", "generic"
+        if module.startswith("refactoring."):
+            return "refactoring", "generic"
+        if module.startswith("knowledge."):
+            return "knowledge", "generic"
+        if module.startswith("documentation."):
+            return "documentation", "generic"
+        if module.startswith("plugins."):
+            return "plugins", "generic"
+        
+        if "config" in module or "settings" in module:
+            return "configuration", "modules"
+        if "model" in module:
+            return "domain", "models"
+        if "controller" in module or "handler" in module:
+            return "web", "controllers"
+        if "service" in module:
+            return "business", "services"
+        if "util" in module or "helper" in module:
+            return "utility", "helpers"
+
+        return "unknown", "generic"

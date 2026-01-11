@@ -5,13 +5,14 @@ Analyzes refactoring operations to detect potentially destructive changes
 and assess risk levels for safe refactoring.
 """
 
-import os
-import re
+from __future__ import annotations
+
 import logging
-from typing import Dict, List, Any
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +34,7 @@ class RiskFactor:
     description: str
     risk_level: OperationRisk
     weight: float  # 0.0 to 1.0, higher means more risky
-    details: Dict[str, Any] = None
-
-    def __post_init__(self):
-        if self.details is None:
-            self.details = {}
+    details: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -50,6 +47,8 @@ class OperationAnalysis:
     risk_factors: List[RiskFactor]
     is_safe: bool
     recommendations: List[str]
+    # optional debugging / explainability payload
+    details: Dict[str, Any] = field(default_factory=dict)
 
 
 class DestructiveOperationDetector:
@@ -60,290 +59,21 @@ class DestructiveOperationDetector:
     types of refactoring operations.
     """
 
-    def __init__(self):
-        """Initialize the detector."""
+    def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
 
-        # Define high-risk operation patterns
-        self.high_risk_operations = {
-            "delete_file",
-            "remove_class",
-            "remove_function",
-            "remove_method",
-            "delete_directory",
-            "remove_import",
-            "remove_dependency",
-        }
-
-        # Define medium-risk operation patterns
-        self.medium_risk_operations = {
-            "rename_file",
-            "move_file",
-            "rename_class",
-            "rename_function",
-            "change_signature",
-            "modify_inheritance",
-            "restructure_module",
-        }
-
-        # Define low-risk operation patterns
-        self.low_risk_operations = {
-            "format_code",
-            "add_comments",
-            "add_docstrings",
-            "fix_imports",
-            "add_type_hints",
-            "extract_variable",
-            "inline_variable",
-        }
-
-    def analyze_operation(self, operation: Dict[str, Any]) -> OperationAnalysis:
-        """Analyze a single refactoring operation for destructive potential."""
-        operation_type = operation.get("type", "unknown")
-        target_files = operation.get("target_files", [])
-
-        self.logger.debug(f"Analyzing operation: {operation_type}")
-
-        # Determine base risk level
-        if operation_type in self.high_risk_operations:
-            base_risk = OperationRisk.HIGH
-        elif operation_type in self.medium_risk_operations:
-            base_risk = OperationRisk.MEDIUM
-        elif operation_type in self.low_risk_operations:
-            base_risk = OperationRisk.LOW
-        else:
-            base_risk = OperationRisk.MEDIUM  # Unknown operations are medium risk
-
-        # Analyze risk factors
-        risk_factors = self._analyze_risk_factors(operation, base_risk)
-
-        # Determine final risk level based on factors
-        final_risk = self._calculate_final_risk(base_risk, risk_factors)
-
-        # Determine if operation is safe
-        is_safe = final_risk in [OperationRisk.LOW, OperationRisk.MEDIUM]
-
-        # Generate recommendations
-        recommendations = self._generate_recommendations(operation, final_risk, risk_factors)
-
-        return OperationAnalysis(
-            operation_type=operation_type,
-            target_files=target_files,
-            risk_level=final_risk,
-            risk_factors=risk_factors,
-            is_safe=is_safe,
-            recommendations=recommendations,
-        )
-
-    def analyze_operation_batch(self, operations: List[Dict[str, Any]]) -> List[OperationAnalysis]:
-        """Analyze a batch of operations."""
-        return [self.analyze_operation(op) for op in operations]
-
-    def _analyze_risk_factors(
-        self, operation: Dict[str, Any], base_risk: OperationRisk
-    ) -> List[RiskFactor]:
-        """Analyze specific risk factors for an operation."""
-        risk_factors = []
-
-        # Check target file criticality
-        target_files = operation.get("target_files", [])
-        for file_path in target_files:
-            if self._is_critical_file(file_path):
-                risk_factors.append(
-                    RiskFactor(
-                        name="critical_file_target",
-                        description=f"Operation targets critical file: {file_path}",
-                        risk_level=OperationRisk.HIGH,
-                        weight=0.8,
-                    )
-                )
-
-        # Check for bulk operations
-        if len(target_files) > 10:
-            risk_factors.append(
-                RiskFactor(
-                    name="bulk_operation",
-                    description=f"Operation affects many files ({len(target_files)})",
-                    risk_level=OperationRisk.MEDIUM,
-                    weight=0.6,
-                )
-            )
-
-        # Check for cross-module dependencies
-        if self._has_cross_module_impact(operation):
-            risk_factors.append(
-                RiskFactor(
-                    name="cross_module_impact",
-                    description="Operation may affect multiple modules",
-                    risk_level=OperationRisk.MEDIUM,
-                    weight=0.7,
-                )
-            )
-
-        # Check for public API changes
-        if self._affects_public_api(operation):
-            risk_factors.append(
-                RiskFactor(
-                    name="public_api_change",
-                    description="Operation may change public API",
-                    risk_level=OperationRisk.HIGH,
-                    weight=0.9,
-                )
-            )
-
-        return risk_factors
-
-    def _calculate_final_risk(
-        self, base_risk: OperationRisk, risk_factors: List[RiskFactor]
-    ) -> OperationRisk:
-        """Calculate final risk level based on base risk and factors."""
-        if not risk_factors:
-            return base_risk
-
-        # Calculate weighted risk score
-        total_weight = sum(factor.weight for factor in risk_factors)
-        if total_weight == 0:
-            return base_risk
-
-        # Count high-risk factors
-        high_risk_factors = [f for f in risk_factors if f.risk_level == OperationRisk.HIGH]
-        critical_risk_factors = [f for f in risk_factors if f.risk_level == OperationRisk.CRITICAL]
-
-        # Escalate risk if critical factors present
-        if critical_risk_factors:
-            return OperationRisk.CRITICAL
-
-        # Escalate risk if multiple high-risk factors
-        if len(high_risk_factors) >= 2:
-            if base_risk == OperationRisk.HIGH:
-                return OperationRisk.CRITICAL
-            else:
-                return OperationRisk.HIGH
-
-        # Escalate risk if single high-risk factor and base risk is medium+
-        if high_risk_factors and base_risk in [
-            OperationRisk.MEDIUM,
-            OperationRisk.HIGH,
-        ]:
-            return OperationRisk.HIGH
-
-        return base_risk
-
-    def _generate_recommendations(
-        self,
-        operation: Dict[str, Any],
-        risk_level: OperationRisk,
-        risk_factors: List[RiskFactor],
-    ) -> List[str]:
-        """Generate safety recommendations for the operation."""
-        recommendations = []
-
-        if risk_level == OperationRisk.CRITICAL:
-            recommendations.append(
-                "CRITICAL: Consider breaking this operation into smaller, safer steps"
-            )
-            recommendations.append("Create comprehensive backup before proceeding")
-            recommendations.append("Test in isolated environment first")
-
-        elif risk_level == OperationRisk.HIGH:
-            recommendations.append("Create backup before proceeding")
-            recommendations.append("Review changes carefully before applying")
-            recommendations.append("Consider running in dry-run mode first")
-
-        elif risk_level == OperationRisk.MEDIUM:
-            recommendations.append("Review changes before applying")
-            recommendations.append("Ensure version control is up to date")
-
-        # Specific recommendations based on risk factors
-        for factor in risk_factors:
-            if factor.name == "critical_file_target":
-                recommendations.append("Extra caution required for critical file modifications")
-            elif factor.name == "bulk_operation":
-                recommendations.append("Consider processing files in smaller batches")
-            elif factor.name == "public_api_change":
-                recommendations.append("Update documentation and notify API consumers")
-
-        return recommendations
-
-    def _is_critical_file(self, file_path: str) -> bool:
-        """Check if a file is considered critical."""
-        critical_patterns = [
-            "__init__.py",
-            "setup.py",
-            "pyproject.toml",
-            "requirements.txt",
-            "main.py",
-            "app.py",
-            "config.py",
-            "settings.py",
-        ]
-
-        file_name = Path(file_path).name.lower()
-        return any(pattern in file_name for pattern in critical_patterns)
-
-    def _has_cross_module_impact(self, operation: Dict[str, Any]) -> bool:
-        """Check if operation has cross-module impact."""
-        # Simplified check - in reality would analyze imports and dependencies
-        operation_type = operation.get("type", "")
-
-        cross_module_operations = {
-            "rename_class",
-            "rename_function",
-            "move_class",
-            "move_function",
-            "change_signature",
-            "remove_class",
-            "remove_function",
-        }
-
-        return operation_type in cross_module_operations
-
-    def _affects_public_api(self, operation: Dict[str, Any]) -> bool:
-        """Check if operation affects public API."""
-        # Simplified check - would need more sophisticated analysis
-        operation_type = operation.get("type", "")
-        target = operation.get("target", "")
-
-        # Operations that typically affect public API
-        public_api_operations = {
-            "rename_class",
-            "rename_function",
-            "change_signature",
-            "remove_class",
-            "remove_function",
-            "modify_inheritance",
-        }
-
-        if operation_type in public_api_operations:
-            # Check if target appears to be public (not starting with _)
-            if target and not target.startswith("_"):
-                return True
-
-        return False
-
-    details: Dict[str, Any] = None
-
-    def __post_init__(self):
-        if self.details is None:
-            self.details = {}
-
-
-class DestructiveOperationDetector:
-    """
-    Detects potentially destructive refactoring operations and assesses their risk levels
-    """
-
-    def __init__(self):
-        """Initialize the destructive operation detector"""
-        # Define base operation risk levels
-        self.operation_risks = {
-            # Low risk operations - safe formatting and documentation
+        # Base operation risk levels (single source of truth).
+        self.operation_risks: Dict[str, OperationRisk] = {
+            # Low risk
             "format_code": OperationRisk.LOW,
             "add_comments": OperationRisk.LOW,
             "fix_imports": OperationRisk.LOW,
             "sort_imports": OperationRisk.LOW,
             "add_docstrings": OperationRisk.LOW,
-            # Medium risk operations - structural changes that are usually safe
+            "add_type_hints": OperationRisk.LOW,
+            "extract_variable": OperationRisk.LOW,
+            "inline_variable": OperationRisk.LOW,
+            # Medium risk
             "extract_method": OperationRisk.MEDIUM,
             "rename_variable": OperationRisk.MEDIUM,
             "inline_method": OperationRisk.MEDIUM,
@@ -351,24 +81,34 @@ class DestructiveOperationDetector:
             "move_method": OperationRisk.MEDIUM,
             "introduce_parameter": OperationRisk.MEDIUM,
             "remove_parameter": OperationRisk.MEDIUM,
-            # High risk operations - significant structural changes
+            "rename_file": OperationRisk.MEDIUM,
+            "move_file": OperationRisk.MEDIUM,
+            "restructure_module": OperationRisk.MEDIUM,
+            # High risk
             "rename_class": OperationRisk.HIGH,
+            "rename_function": OperationRisk.HIGH,
             "move_class": OperationRisk.HIGH,
+            "move_function": OperationRisk.HIGH,
+            "change_signature": OperationRisk.HIGH,
+            "change_method_signature": OperationRisk.HIGH,
+            "modify_inheritance": OperationRisk.HIGH,
             "change_interface": OperationRisk.HIGH,
             "remove_method": OperationRisk.HIGH,
             "merge_classes": OperationRisk.HIGH,
             "split_class": OperationRisk.HIGH,
-            "change_method_signature": OperationRisk.HIGH,
-            # Critical operations - potentially destructive
+            "remove_import": OperationRisk.HIGH,
+            "remove_dependency": OperationRisk.HIGH,
+            # Critical
             "delete_file": OperationRisk.CRITICAL,
+            "delete_directory": OperationRisk.CRITICAL,
             "remove_class": OperationRisk.CRITICAL,
-            "change_inheritance": OperationRisk.CRITICAL,
+            "remove_function": OperationRisk.CRITICAL,
             "remove_module": OperationRisk.CRITICAL,
             "restructure_package": OperationRisk.CRITICAL,
         }
 
-        # Define critical file patterns that increase risk
-        self.critical_file_patterns = [
+        # Critical file patterns that increase risk (regex, case-insensitive).
+        self.critical_file_patterns: List[str] = [
             r"__init__\.py$",
             r"setup\.py$",
             r"main\.py$",
@@ -377,13 +117,13 @@ class DestructiveOperationDetector:
             r"settings\.py$",
             r"requirements\.txt$",
             r"pyproject\.toml$",
-            r"Dockerfile$",
-            r"\.github/.*\.yml$",
-            r"\.github/.*\.yaml$",
+            r"dockerfile$",
+            r"\.github/.*\.(yml|yaml)$",
         ]
+        self._critical_file_regexes = [re.compile(p, re.IGNORECASE) for p in self.critical_file_patterns]
 
-        # Define high-impact directories
-        self.high_impact_directories = [
+        # High-impact directories (heuristics).
+        self.high_impact_directories = {
             "src",
             "lib",
             "core",
@@ -392,99 +132,90 @@ class DestructiveOperationDetector:
             "services",
             "utils",
             "common",
-        ]
+        }
 
     def analyze_operation(
         self,
-        operation_type: str,
-        target_files: List[str],
-        operation_details: Dict[str, Any] = None,
+        operation: Union[Dict[str, Any], str],
+        target_files: Optional[Sequence[str]] = None,
+        operation_details: Optional[Dict[str, Any]] = None,
     ) -> OperationAnalysis:
         """
-        Analyze an operation for destructive potential
+        Analyze a single operation.
 
-        Args:
-            operation_type: Type of operation being performed
-            target_files: Files that will be modified
-            operation_details: Additional details about the operation
-
-        Returns:
-            OperationAnalysis with risk assessment
+        Supports both call styles:
+          1) analyze_operation({"type": "...", "target_files": [...], ...})
+          2) analyze_operation("rename_class", ["a.py"], {...})
         """
-        if operation_details is None:
-            operation_details = {}
+        if isinstance(operation, dict):
+            operation_type = str(operation.get("type", "unknown"))
+            files = list(operation.get("target_files", []) or [])
+            details = dict(operation)
+        else:
+            operation_type = str(operation)
+            files = list(target_files or [])
+            details = dict(operation_details or {})
 
-        risk_factors = []
-        recommendations = []
+        self.logger.debug("Analyzing operation: %s", operation_type)
 
-        # Get base risk level
         base_risk = self.operation_risks.get(operation_type, OperationRisk.MEDIUM)
-        current_risk = base_risk
 
-        # Analyze file-based risk factors
-        file_risk_factors = self._analyze_file_risks(target_files)
-        risk_factors.extend(file_risk_factors)
+        risk_factors: List[RiskFactor] = []
+        risk_factors.extend(self._analyze_file_risks(files))
+        risk_factors.extend(self._analyze_scope_risks(details, files))
+        risk_factors.extend(self._analyze_dependency_risks(operation_type, files, details))
+        risk_factors.extend(self._analyze_complexity_risks(files, operation_type))
 
-        # Analyze operation scope
-        scope_risk_factors = self._analyze_scope_risks(operation_details, target_files)
-        risk_factors.extend(scope_risk_factors)
-
-        # Analyze dependency impact
-        dependency_risk_factors = self._analyze_dependency_risks(target_files, operation_details)
-        risk_factors.extend(dependency_risk_factors)
-
-        # Analyze code complexity
-        complexity_risk_factors = self._analyze_complexity_risks(target_files, operation_type)
-        risk_factors.extend(complexity_risk_factors)
-
-        # Calculate overall risk level based on risk factors
-        current_risk = self._calculate_overall_risk(base_risk, risk_factors)
-
-        # Generate recommendations
-        recommendations = self._generate_recommendations(current_risk, risk_factors, operation_type)
-
-        # Determine if operation is safe
-        is_safe = current_risk != OperationRisk.CRITICAL
+        final_risk = self._calculate_overall_risk(base_risk, risk_factors)
+        recommendations = self._generate_recommendations(final_risk, risk_factors, operation_type)
 
         return OperationAnalysis(
             operation_type=operation_type,
-            target_files=target_files,
-            risk_level=current_risk,
+            target_files=files,
+            risk_level=final_risk,
             risk_factors=risk_factors,
-            is_safe=is_safe,
+            is_safe=(final_risk != OperationRisk.CRITICAL),
             recommendations=recommendations,
             details={
                 "base_risk": base_risk.value,
-                "escalated_risk": current_risk.value,
-                "file_count": len(target_files),
-                "operation_details": operation_details,
+                "final_risk": final_risk.value,
+                "file_count": len(files),
             },
         )
 
-    def _analyze_file_risks(self, target_files: List[str]) -> List[RiskFactor]:
-        """Analyze risk factors based on target files"""
-        risk_factors = []
+    def analyze_operation_batch(self, operations: List[Dict[str, Any]]) -> List[OperationAnalysis]:
+        """Analyze a batch of operations."""
+        return [self.analyze_operation(op) for op in operations]
 
-        # Check for critical files
-        critical_files = []
-        for file_path in target_files:
-            for pattern in self.critical_file_patterns:
-                if re.search(pattern, file_path):
-                    critical_files.append(file_path)
-                    break
+    def _normalize_path(self, file_path: str) -> str:
+        # make matching stable across platforms (Windows separators etc.)
+        return str(file_path).replace("\\", "/").lower()
 
+    def _is_critical_file(self, file_path: str) -> bool:
+        p = self._normalize_path(file_path)
+        name = Path(file_path).name.lower()
+        if name in {"__init__.py", "setup.py", "main.py", "app.py", "config.py", "settings.py"}:
+            return True
+        for rx in self._critical_file_regexes:
+            if rx.search(p):
+                return True
+        return False
+
+    def _analyze_file_risks(self, target_files: Sequence[str]) -> List[RiskFactor]:
+        risk_factors: List[RiskFactor] = []
+
+        critical_files = [fp for fp in target_files if self._is_critical_file(fp)]
         if critical_files:
             risk_factors.append(
                 RiskFactor(
                     name="critical_files",
-                    description=f"Operation affects critical files: {', '.join(critical_files)}",
+                    description="Operation affects critical files",
                     risk_level=OperationRisk.HIGH,
                     weight=0.8,
                     details={"critical_files": critical_files},
                 )
             )
 
-        # Check for high file count
         if len(target_files) > 20:
             risk_factors.append(
                 RiskFactor(
@@ -496,14 +227,11 @@ class DestructiveOperationDetector:
                 )
             )
 
-        # Check for high-impact directories
-        high_impact_files = []
-        for file_path in target_files:
-            for directory in self.high_impact_directories:
-                if f"/{directory}/" in file_path or file_path.startswith(f"{directory}/"):
-                    high_impact_files.append(file_path)
-                    break
-
+        high_impact_files: List[str] = []
+        for fp in target_files:
+            p = self._normalize_path(fp)
+            if any(p.startswith(f"{d}/") or f"/{d}/" in p for d in self.high_impact_directories):
+                high_impact_files.append(fp)
         if high_impact_files:
             risk_factors.append(
                 RiskFactor(
@@ -518,7 +246,7 @@ class DestructiveOperationDetector:
         return risk_factors
 
     def _analyze_scope_risks(
-        self, operation_details: Dict[str, Any], target_files: List[str]
+        self, operation_details: Dict[str, Any], target_files: Sequence[str]
     ) -> List[RiskFactor]:
         """Analyze risk factors based on operation scope"""
         risk_factors = []
@@ -535,43 +263,24 @@ class DestructiveOperationDetector:
                 )
             )
 
-        # Check for cross-module operations
-        modules = set()
-        for file_path in target_files:
-            # Extract module path (directory structure)
-            module_path = os.path.dirname(file_path)
-            if module_path:
-                modules.add(module_path)
-
-        if len(modules) > 5:
-            risk_factors.append(
-                RiskFactor(
-                    name="cross_module_operation",
-                    description=f"Operation spans {len(modules)} different modules",
-                    risk_level=OperationRisk.MEDIUM,
-                    weight=0.6,
-                    details={"module_count": len(modules), "modules": list(modules)},
-                )
-            )
-
         return risk_factors
 
     def _analyze_dependency_risks(
-        self, target_files: List[str], operation_details: Dict[str, Any]
+        self, operation_type: str, target_files: Sequence[str], operation_details: Dict[str, Any]
     ) -> List[RiskFactor]:
         """Analyze risk factors based on dependency impact"""
         risk_factors = []
 
-        # Operations that commonly affect external dependencies
-        high_dependency_impact_ops = [
+        high_dependency_impact_ops = {
             "rename_class",
+            "rename_function",
             "move_class",
+            "move_function",
             "change_interface",
             "remove_method",
             "change_method_signature",
-        ]
-
-        operation_type = operation_details.get("operation_type", "")
+            "change_signature",
+        }
         if operation_type in high_dependency_impact_ops:
             risk_factors.append(
                 RiskFactor(
@@ -605,7 +314,7 @@ class DestructiveOperationDetector:
         return risk_factors
 
     def _analyze_complexity_risks(
-        self, target_files: List[str], operation_type: str
+        self, target_files: Sequence[str], operation_type: str
     ) -> List[RiskFactor]:
         """Analyze risk factors based on code complexity"""
         risk_factors = []
@@ -615,11 +324,14 @@ class DestructiveOperationDetector:
             complex_files = []
 
             for file_path in target_files:
-                if not file_path.endswith(".py") or not os.path.exists(file_path):
+                if not str(file_path).endswith(".py"):
+                    continue
+                p = Path(file_path)
+                if not p.exists():
                     continue
 
                 try:
-                    with open(file_path, "r", encoding="utf-8") as f:
+                    with p.open("r", encoding="utf-8") as f:
                         lines = f.readlines()
                         line_count = len(
                             [
@@ -635,7 +347,7 @@ class DestructiveOperationDetector:
                             complex_files.append((file_path, line_count))
 
                 except Exception as e:
-                    logger.debug(f"Could not analyze complexity for {file_path}: {e}")
+                    logger.debug("Could not analyze complexity for %s: %s", file_path, e)
 
             if complex_files:
                 risk_factors.append(
@@ -661,7 +373,7 @@ class DestructiveOperationDetector:
                 )
 
         except Exception as e:
-            logger.debug(f"Error analyzing complexity risks: {e}")
+            logger.debug("Error analyzing complexity risks: %s", e)
 
         return risk_factors
 
@@ -755,7 +467,7 @@ class DestructiveOperationDetector:
         self,
         operation_type: str,
         target_files: List[str],
-        operation_details: Dict[str, Any] = None,
+        operation_details: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Quick check if an operation is safe to execute

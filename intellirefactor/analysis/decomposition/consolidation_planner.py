@@ -1,0 +1,369 @@
+"""
+Consolidation Planner
+
+Generates consolidation plans with step-by-step patch operations for safe refactoring.
+Implements the "Golden Pattern" from ref.md: New Canonical + Wrappers.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Dict, List, Optional, Tuple, Set
+
+from .models import (
+    SimilarityCluster,
+    CanonicalizationPlan,
+    PatchStep,
+    PatchStepKind,
+    RecommendationType,
+    RiskLevel,
+    EffortClass,
+    FunctionalBlock,
+    ProjectFunctionalMap,
+    ApplicationMode,
+    DecompositionConfig,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class ConsolidationPlanner:
+    """
+    Generates consolidation plans for similarity clusters.
+
+    Safe consolidation pattern:
+    1) ADD_NEW_MODULE - create canonical impl
+    2) ADD_WRAPPER - keep old API working
+    3) UPDATE_IMPORTS - move call sites (assisted)
+    4) DELETE_DEAD - remove old impl when safe (assisted)
+    """
+
+    def __init__(self, config: Optional[DecompositionConfig] = None):
+        self.logger = logger
+        self.config = config or DecompositionConfig.default()
+
+    def create_consolidation_plans(
+        self,
+        clusters: List[SimilarityCluster],
+        functional_map: ProjectFunctionalMap,
+        mode: ApplicationMode = ApplicationMode.PLAN_ONLY,
+    ) -> List[CanonicalizationPlan]:
+        """Create consolidation plans for all clusters."""
+        if mode == ApplicationMode.ANALYZE_ONLY:
+            return []
+
+        plans: List[CanonicalizationPlan] = []
+
+        for cluster in clusters:
+            if cluster.recommendation == RecommendationType.KEEP_SEPARATE:
+                continue
+            plan = self._create_cluster_plan(cluster, functional_map, mode)
+            if plan:
+                plans.append(plan)
+
+        plans.sort(key=self._plan_priority_key)
+        self.logger.info(f"Created {len(plans)} consolidation plans")
+        return plans
+
+    def _create_cluster_plan(
+        self,
+        cluster: SimilarityCluster,
+        functional_map: ProjectFunctionalMap,
+        mode: ApplicationMode,
+    ) -> Optional[CanonicalizationPlan]:
+        """Create consolidation plan for a single cluster."""
+        try:
+            cluster_blocks = [functional_map.blocks[bid] for bid in cluster.blocks if bid in functional_map.blocks]
+            if not cluster_blocks:
+                return None
+
+            target_module, target_symbol = self._parse_proposed_target(cluster.proposed_target)
+
+            steps = self._generate_consolidation_steps(
+                cluster=cluster,
+                blocks=cluster_blocks,
+                target_module=target_module,
+                target_symbol=target_symbol,
+                mode=mode,
+            )
+
+            plan = CanonicalizationPlan(
+                cluster_id=cluster.id,
+                target_module=target_module,
+                target_symbol=target_symbol,
+                steps=steps,
+                removal_criteria=self._generate_removal_criteria(cluster_blocks),
+                estimated_effort=cluster.effort_class,
+                risk_assessment=cluster.risk_level,
+                dependencies=self._assess_plan_dependencies(cluster, functional_map),
+            )
+            return plan
+
+        except Exception as e:
+            self.logger.error(f"Failed to create plan for cluster {cluster.id}: {e}", exc_info=True)
+            return None
+
+    def _parse_proposed_target(self, proposed_target: str) -> Tuple[str, str]:
+        """Parse proposed target into module and symbol."""
+        pt = (proposed_target or "").strip()
+        if not pt:
+            return "unified/unified.py", "unified_function"
+
+        if "::" in pt:
+            module, symbol = pt.split("::", 1)
+            module = module.strip() or "unified/unified.py"
+            symbol = symbol.strip() or "unified_function"
+            return module, symbol
+
+        return pt, "unified_function"
+
+    def _generate_consolidation_steps(
+        self,
+        cluster: SimilarityCluster,
+        blocks: List[FunctionalBlock],
+        target_module: str,
+        target_symbol: str,
+        mode: ApplicationMode,
+    ) -> List[PatchStep]:
+        if cluster.recommendation == RecommendationType.MERGE:
+            return self._generate_merge_steps(blocks, target_module, target_symbol, mode)
+        if cluster.recommendation == RecommendationType.EXTRACT_BASE:
+            return self._generate_extract_base_steps(blocks, target_module, target_symbol, mode)
+        if cluster.recommendation == RecommendationType.WRAP_ONLY:
+            return self._generate_wrap_only_steps(blocks, target_module, target_symbol, mode)
+        return []
+
+    def _validations(self, *names: str) -> List[str]:
+        """Keep only validations that are enabled by config (preserve order)."""
+        allowed = set(self.config.validation_steps or [])
+        result = [n for n in names if n in allowed]
+        return result or list(self.config.validation_steps)
+
+    def _generate_merge_steps(
+        self,
+        blocks: List[FunctionalBlock],
+        target_module: str,
+        target_symbol: str,
+        mode: ApplicationMode,
+    ) -> List[PatchStep]:
+        steps: List[PatchStep] = []
+
+        step1 = PatchStep(
+            kind=PatchStepKind.ADD_NEW_MODULE,
+            files_touched=[target_module],
+            description=f"Create unified implementation in {target_module}::{target_symbol}",
+            preconditions=["Target module directory exists"],
+            validations=self._validations("parse_check", "import_check"),
+            target_module=target_module,
+            target_symbol=target_symbol,
+            source_blocks=[b.id for b in blocks],
+        )
+        steps.append(step1)
+
+        wrapper_steps: List[PatchStep] = []
+        for block in blocks:
+            s = PatchStep(
+                kind=PatchStepKind.ADD_WRAPPER,
+                files_touched=[block.file_path],
+                description=f"Add wrapper for {block.qualname} -> {target_module}::{target_symbol}",
+                preconditions=[f"Step {step1.id} completed successfully"],
+                validations=self._validations("parse_check", "import_check", "unit_tests"),
+                target_module=target_module,
+                target_symbol=target_symbol,
+                source_blocks=[block.id],
+            )
+            wrapper_steps.append(s)
+            steps.append(s)
+
+        if mode == ApplicationMode.APPLY_ASSISTED:
+            # Optional: update call sites to import canonical directly
+            for block in blocks:
+                s = PatchStep(
+                    kind=PatchStepKind.UPDATE_IMPORTS,
+                    files_touched=self._find_files_importing_block(block),
+                    description=f"Update imports to use {target_module}::{target_symbol} directly (migrate call sites)",
+                    preconditions=[f"All wrapper steps completed: {', '.join(ws.id for ws in wrapper_steps)}"],
+                    validations=self._validations("parse_check", "import_check", "unit_tests", "smoke_scenarios"),
+                    target_module=target_module,
+                    target_symbol=target_symbol,
+                    source_blocks=[block.id],
+                )
+                steps.append(s)
+
+            # Optional: remove originals when safe
+            for block in blocks:
+                s = PatchStep(
+                    kind=PatchStepKind.DELETE_DEAD,
+                    files_touched=[block.file_path],
+                    description=f"Remove original implementation of {block.qualname} (after migration)",
+                    preconditions=["Zero call sites to original implementation", "Manual review completed"],
+                    validations=self._validations("parse_check", "import_check", "unit_tests", "smoke_scenarios"),
+                    target_module=target_module,
+                    target_symbol=target_symbol,
+                    source_blocks=[block.id],
+                )
+                steps.append(s)
+
+        return steps
+
+    def _generate_extract_base_steps(
+        self,
+        blocks: List[FunctionalBlock],
+        target_module: str,
+        target_symbol: str,
+        mode: ApplicationMode,
+    ) -> List[PatchStep]:
+        steps: List[PatchStep] = []
+
+        base_symbol = f"{target_symbol}_base"
+        step_base = PatchStep(
+            kind=PatchStepKind.ADD_NEW_MODULE,
+            files_touched=[target_module],
+            description=f"Create base implementation in {target_module}::{base_symbol}",
+            preconditions=["Target module directory exists"],
+            validations=self._validations("parse_check", "import_check"),
+            target_module=target_module,
+            target_symbol=base_symbol,
+            source_blocks=[b.id for b in blocks],
+        )
+        steps.append(step_base)
+
+        # Create variants first, store IDs for proper wrapper dependencies
+        variant_steps_by_symbol: Dict[str, PatchStep] = {}
+
+        for i, block in enumerate(blocks, start=1):
+            variant_symbol = f"{target_symbol}_variant_{i}"
+            s = PatchStep(
+                kind=PatchStepKind.ADD_NEW_MODULE,
+                files_touched=[target_module],
+                description=f"Create specialized variant {variant_symbol} for {block.qualname} (built on {base_symbol})",
+                preconditions=[f"Step {step_base.id} completed successfully"],
+                validations=self._validations("parse_check", "import_check"),
+                target_module=target_module,
+                target_symbol=variant_symbol,
+                source_blocks=[block.id],
+            )
+            variant_steps_by_symbol[variant_symbol] = s
+            steps.append(s)
+
+        for i, block in enumerate(blocks, start=1):
+            variant_symbol = f"{target_symbol}_variant_{i}"
+            variant_step = variant_steps_by_symbol[variant_symbol]
+            s = PatchStep(
+                kind=PatchStepKind.ADD_WRAPPER,
+                files_touched=[block.file_path],
+                description=f"Add wrapper for {block.qualname} -> {target_module}::{variant_symbol}",
+                preconditions=[f"Step {variant_step.id} completed successfully"],
+                validations=self._validations("parse_check", "import_check", "unit_tests"),
+                target_module=target_module,
+                target_symbol=variant_symbol,
+                source_blocks=[block.id],
+            )
+            steps.append(s)
+
+        # (optional) assisted migration/removal could be added here too; оставил консервативно.
+        return steps
+
+    def _generate_wrap_only_steps(
+        self,
+        blocks: List[FunctionalBlock],
+        target_module: str,
+        target_symbol: str,
+        mode: ApplicationMode,
+    ) -> List[PatchStep]:
+        steps: List[PatchStep] = []
+
+        canonical_block = self._find_canonical_block(blocks)
+
+        step1 = PatchStep(
+            kind=PatchStepKind.ADD_NEW_MODULE,
+            files_touched=[target_module],
+            description=f"Create unified interface in {target_module}::{target_symbol} (delegate to canonical impl)",
+            preconditions=["Target module directory exists"],
+            validations=self._validations("parse_check", "import_check"),
+            target_module=target_module,
+            target_symbol=target_symbol,
+            source_blocks=[canonical_block.id],
+        )
+        steps.append(step1)
+
+        for block in blocks:
+            if block.id == canonical_block.id:
+                continue
+            s = PatchStep(
+                kind=PatchStepKind.ADD_WRAPPER,
+                files_touched=[block.file_path],
+                description=f"Add wrapper for {block.qualname} -> {target_module}::{target_symbol}",
+                preconditions=[f"Step {step1.id} completed successfully"],
+                validations=self._validations("parse_check", "import_check", "unit_tests"),
+                target_module=target_module,
+                target_symbol=target_symbol,
+                source_blocks=[block.id],
+            )
+            steps.append(s)
+
+        return steps
+
+    def _find_canonical_block(self, blocks: List[FunctionalBlock]) -> FunctionalBlock:
+        """Find the best block to use as canonical implementation."""
+        if len(blocks) == 1:
+            return blocks[0]
+
+        best_block = blocks[0]
+        best_score = float("-inf")
+
+        for block in blocks:
+            score = 0.0
+            score += len(block.called_by) * 0.4
+            score += max(0.0, 20.0 - float(block.cyclomatic)) * 0.3
+            score += max(0.0, 50.0 - float(block.loc)) * 0.3
+
+            if score > best_score:
+                best_score = score
+                best_block = block
+
+        return best_block
+
+    def _find_files_importing_block(self, block: FunctionalBlock) -> List[str]:
+        """Find files that import/use this block (stub; conservative)."""
+        return []
+
+    def _generate_removal_criteria(self, blocks: List[FunctionalBlock]) -> Dict[str, Any]:
+        """Generate criteria for when it's safe to remove original implementations."""
+        return {
+            "call_sites": 0,
+            "tests": "pass",
+            "imports": 0,
+            "manual_review": True,
+        }
+
+    def _assess_plan_dependencies(self, cluster: SimilarityCluster, functional_map: ProjectFunctionalMap) -> List[str]:
+        """Assess dependencies between consolidation plans."""
+        deps: Set[str] = set()
+
+        for other_cluster in functional_map.clusters.values():
+            if other_cluster.id == cluster.id:
+                continue
+
+            other_block_ids = set(other_cluster.blocks)
+            for bid in cluster.blocks:
+                b = functional_map.blocks.get(bid)
+                if not b:
+                    continue
+                # if some caller belongs to other cluster => dependency
+                if any(caller_id in other_block_ids for caller_id in b.called_by):
+                    deps.add(other_cluster.id)
+                    break
+
+        return sorted(deps)
+
+    def _plan_priority_key(self, plan: CanonicalizationPlan) -> Tuple[int, int, int]:
+        """Sorting key (lower = higher priority): low risk, low effort, few deps."""
+        risk_order = {RiskLevel.LOW: 0, RiskLevel.MEDIUM: 1, RiskLevel.HIGH: 2}
+        effort_order = {EffortClass.XS: 0, EffortClass.S: 1, EffortClass.M: 2, EffortClass.L: 3, EffortClass.XL: 4}
+
+        return (
+            risk_order.get(plan.risk_assessment, 2),
+            effort_order.get(plan.estimated_effort, 4),
+            len(plan.dependencies),
+        )

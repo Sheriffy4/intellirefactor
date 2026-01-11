@@ -424,8 +424,8 @@ class RefactoringValidator:
                     max_depth = self._calculate_nesting_depth(tree)
                     if max_depth > 6:
                         quality_issues.append(f"{file_path}: Maximum nesting depth is {max_depth}")
-                except:
-                    pass
+                except Exception:
+                    logger.debug("Failed to parse AST for nesting depth: %s", file_path, exc_info=True)
 
                 # Check for duplicate code patterns (simple heuristic)
                 line_counts = {}
@@ -902,7 +902,7 @@ class SemanticPreservationChecker:
         try:
             # This is a simplified comparison - in practice, this would be more sophisticated
             return ast.dump(ast1) == ast.dump(ast2)
-        except:
+        except Exception:
             return False
 
     def _extract_behavioral_signature(self, tree: ast.AST) -> Dict[str, Any]:
@@ -934,7 +934,7 @@ class SemanticPreservationChecker:
             refactored_structure = self._extract_structure_without_names(refactored_ast)
 
             return original_structure == refactored_structure
-        except:
+        except Exception:
             return False
 
     def _extract_structure_without_names(self, tree: ast.AST) -> List[str]:

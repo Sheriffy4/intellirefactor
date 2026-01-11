@@ -12,7 +12,7 @@ Generates detailed flowcharts for Python methods and functions including:
 import ast
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -23,11 +23,7 @@ class FlowNode:
     type: str  # start, end, process, decision, loop, exception
     content: str
     line_number: int
-    connections: List[str] = None
-
-    def __post_init__(self):
-        if self.connections is None:
-            self.connections = []
+    connections: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -451,7 +447,7 @@ class FlowchartGenerator:
                     line = lines[condition.lineno - 1]
                     return line.strip()
                 return "condition"
-        except:
+        except Exception:
             return "condition"
 
     def _get_expression_text(self, expr: ast.expr, lines: List[str]) -> str:
@@ -465,7 +461,7 @@ class FlowchartGenerator:
                     line = lines[expr.lineno - 1]
                     return line.strip()
                 return "expression"
-        except:
+        except Exception:
             return "expression"
 
     def _get_statement_text(self, stmt: ast.stmt, lines: List[str]) -> str:
@@ -485,7 +481,7 @@ class FlowchartGenerator:
                         line = line[:47] + "..."
                     return line
                 return "statement"
-        except:
+        except Exception:
             return "statement"
 
     def generate_flowchart(self, analysis_result: Dict[str, Any]) -> str:
@@ -567,7 +563,7 @@ flowchart TD
         return max(1, decision_count + loop_count)
 
 
-def generate_method_flowchart(file_path: str, method_name: str, output_path: str = None) -> str:
+def generate_method_flowchart(file_path: str, method_name: str, output_path: Optional[str] = None) -> str:
     """Generate flowchart documentation for a specific method."""
     generator = FlowchartGenerator()
     path_obj = Path(file_path)

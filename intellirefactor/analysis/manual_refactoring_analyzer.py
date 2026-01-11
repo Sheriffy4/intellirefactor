@@ -311,10 +311,6 @@ def analyze_manual_refactoring(original_file: str, refactored_dir: str, knowledg
     """Запускает анализ ручного рефакторинга и сохраняет результаты."""
     analyzer = ManualRefactoringAnalyzer()
 
-    # Анализируем оригинальный файл
-    logger.info(f"Analyzing original file: {original_file}")
-    original_analysis = analyzer.analyze_original_module(original_file)
-
     # Извлекаем паттерны рефакторинга
     logger.info(f"Extracting refactoring patterns from {refactored_dir}")
     patterns = analyzer.extract_refactoring_patterns(original_file, refactored_dir)

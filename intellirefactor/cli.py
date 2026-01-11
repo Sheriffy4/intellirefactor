@@ -281,6 +281,29 @@ def create_parser() -> argparse.ArgumentParser:
         "--format", choices=["json", "yaml"], default="json", help="Display format"
     )
 
+    # Expert analysis command
+    expert_parser = subparsers.add_parser(
+        "expert-analyze", help="Run expert refactoring analysis for safe code restructuring"
+    )
+    expert_parser.add_argument("project_path", help="Path to project root directory")
+    expert_parser.add_argument("target_file", help="Path to target file to analyze")
+    expert_parser.add_argument(
+        "--output", "-o", help="Output directory for analysis results (default: ./expert_analysis)"
+    )
+    expert_parser.add_argument(
+        "--format", 
+        choices=["json", "markdown", "both"], 
+        default="both", 
+        help="Output format (default: both)"
+    )
+    expert_parser.add_argument(
+        "--detailed", action="store_true", 
+        help="Export detailed analysis data as requested by experts (includes full call graph, specific locations, executable tests)"
+    )
+    expert_parser.add_argument(
+        "--verbose", "-v", action="store_true", help="Enable verbose output"
+    )
+
     # Index command
     index_parser = subparsers.add_parser(
         "index", help="Index management for persistent analysis data"
@@ -4222,6 +4245,11 @@ def main() -> None:
         cmd_generate(args)
         return
 
+    # Handle expert analysis commands that don't need IntelliRefactor instance
+    if args.command == "expert-analyze":
+        cmd_expert_analyze(args)
+        return
+
     try:
         # Load configuration and create IntelliRefactor instance
         config = load_config(getattr(args, "config", None))
@@ -5264,6 +5292,180 @@ def cmd_analyze_enhanced(args) -> None:
             import traceback
 
             traceback.print_exc()
+        sys.exit(1)
+
+
+def cmd_expert_analyze(args) -> None:
+    """Handle expert analysis command."""
+    from intellirefactor.cli.rich_output import get_rich_output
+    
+    rich_output = get_rich_output()
+    
+    try:
+        # Import the expert analyzer
+        from intellirefactor.analysis.expert import ExpertRefactoringAnalyzer
+        
+        project_path = Path(args.project_path).resolve()
+        target_file = Path(args.target_file).resolve()
+        
+        # Validate inputs
+        if not project_path.exists():
+            rich_output.error(f"Project path does not exist: {project_path}")
+            sys.exit(1)
+        
+        if not target_file.exists():
+            rich_output.error(f"Target file does not exist: {target_file}")
+            sys.exit(1)
+        
+        if not target_file.suffix == '.py':
+            rich_output.error(f"Target file must be a Python file: {target_file}")
+            sys.exit(1)
+        
+        # Set up output directory
+        output_dir = Path(args.output) if args.output else Path("./expert_analysis")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        rich_output.info("Starting expert refactoring analysis...")
+        rich_output.info(f"Project: {project_path}")
+        rich_output.info(f"Target: {target_file}")
+        rich_output.info(f"Output: {output_dir}")
+        
+        # Initialize analyzer
+        analyzer = ExpertRefactoringAnalyzer(
+            project_root=str(project_path),
+            target_module=str(target_file),
+            output_dir=str(output_dir)
+        )
+        
+        # Run analysis
+        with rich_output.progress("Running expert analysis..."):
+            result = analyzer.analyze_for_expert_refactoring()
+        
+        # Export detailed data if requested
+        detailed_data = None
+        if args.detailed:
+            with rich_output.progress("Exporting detailed expert data..."):
+                detailed_data = analyzer.export_detailed_expert_data()
+        
+        # Generate reports based on format
+        reports_generated = []
+        
+        if args.format in ["json", "both"]:
+            json_path = output_dir / f"expert_analysis_{analyzer.timestamp}.json"
+            with open(json_path, 'w', encoding='utf-8') as f:
+                import json
+                json.dump(result.to_dict(), f, indent=2, ensure_ascii=False)
+            reports_generated.append(str(json_path))
+            
+            # Export detailed data if requested
+            if detailed_data:
+                detailed_json_path = output_dir / f"expert_analysis_detailed_{analyzer.timestamp}.json"
+                with open(detailed_json_path, 'w', encoding='utf-8') as f:
+                    json.dump(detailed_data, f, indent=2, ensure_ascii=False)
+                reports_generated.append(str(detailed_json_path))
+                
+                # Also create the characterization test file
+                if 'characterization_tests' in detailed_data:
+                    test_file_path = detailed_data['characterization_tests'].get('test_file_path', 'test_characterization.py')
+                    test_code = detailed_data['characterization_tests'].get('executable_test_code', '')
+                    if test_code:
+                        test_path = output_dir / test_file_path
+                        with open(test_path, 'w', encoding='utf-8') as f:
+                            f.write(test_code)
+                        reports_generated.append(str(test_path))
+        
+        if args.format in ["markdown", "both"]:
+            md_path = analyzer.generate_expert_report(str(output_dir))
+            reports_generated.append(md_path)
+        
+        # Display results
+        rich_output.success("Expert analysis completed successfully!")
+        rich_output.info(f"Quality Score: {result.analysis_quality_score:.1f}/100")
+        rich_output.info(f"Risk Level: {result.risk_assessment.value.upper()}")
+        
+        if args.detailed:
+            rich_output.success("✅ Detailed expert data exported - all expert requirements addressed!")
+            if detailed_data and 'expert_recommendations' in detailed_data:
+                expert_recs = detailed_data['expert_recommendations']
+                if 'expert_1_requirements' in expert_recs:
+                    rich_output.info("Expert 1 Requirements:")
+                    for rec in expert_recs['expert_1_requirements']:
+                        rich_output.info(f"  {rec}")
+                if 'expert_2_requirements' in expert_recs:
+                    rich_output.info("Expert 2 Requirements:")
+                    for rec in expert_recs['expert_2_requirements']:
+                        rich_output.info(f"  {rec}")
+        
+        if result.recommendations:
+            rich_output.info("Key Recommendations:")
+            for i, rec in enumerate(result.recommendations[:5], 1):
+                rich_output.info(f"  {i}. {rec}")
+        
+        rich_output.info("Generated Reports:")
+        for report in reports_generated:
+            rich_output.info(f"  • {report}")
+        
+        # Show enhanced statistics for detailed mode
+        if args.detailed and detailed_data:
+            rich_output.info("Detailed Analysis Statistics:")
+            
+            # Call graph details
+            if 'call_graph' in detailed_data:
+                cg = detailed_data['call_graph']['call_graph']
+                rich_output.info(f"  • Complete call graph: {cg.get('total_relationships', 0)} relationships")
+            
+            # External usage details
+            if 'external_usage' in detailed_data:
+                eu = detailed_data['external_usage']['files_summary']
+                rich_output.info(f"  • External usage: {eu.get('total_files', 0)} files with specific locations")
+            
+            # Duplicate details
+            if 'duplicates' in detailed_data:
+                dup = detailed_data['duplicates']['summary']
+                rich_output.info(f"  • Code duplicates: {dup.get('total_duplicates', 0)} fragments, {dup.get('total_savings', 0)} lines savings")
+            
+            # Test details
+            if 'characterization_tests' in detailed_data:
+                ct = detailed_data['characterization_tests']['summary']
+                rich_output.info(f"  • Characterization tests: {ct.get('total_tests', 0)} executable test cases")
+            
+            # Missing test details
+            if 'test_analysis' in detailed_data:
+                ta = detailed_data['test_analysis']['missing_test_coverage']
+                rich_output.info(f"  • Missing test coverage: {ta.get('total_missing', 0)} specific methods identified")
+        else:
+            # Show enhanced statistics for detailed mode
+            stats = []
+            if result.call_graph:
+                stats.append(f"Methods: {len(result.call_graph.nodes)}")
+                stats.append(f"Call relationships: {len(result.call_graph.edges)}")
+                if result.call_graph.cycles:
+                    stats.append(f"Cycles detected: {len(result.call_graph.cycles)}")
+            
+            if result.external_callers:
+                stats.append(f"External callers: {len(result.external_callers)}")
+            
+            if result.characterization_tests:
+                stats.append(f"Test cases generated: {len(result.characterization_tests)}")
+            
+            if result.duplicate_fragments:
+                total_savings = sum(frag.estimated_savings for frag in result.duplicate_fragments)
+                stats.append(f"Duplicate savings: {total_savings} lines")
+            
+            if stats:
+                rich_output.info("Basic Analysis Statistics:")
+                for stat in stats:
+                    rich_output.info(f"  • {stat}")
+        
+    except ImportError as e:
+        rich_output.error(f"Expert analyzer not available: {e}")
+        rich_output.info("Make sure the expert analysis module is properly installed")
+        sys.exit(1)
+    except Exception as e:
+        rich_output.error(f"Expert analysis failed: {e}")
+        if args.verbose:
+            import traceback
+            rich_output.error(traceback.format_exc())
         sys.exit(1)
 
 

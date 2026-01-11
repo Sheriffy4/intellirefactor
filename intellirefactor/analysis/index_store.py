@@ -5,16 +5,24 @@ This module implements the IndexStore class that provides thread-safe SQLite ope
 for storing and retrieving analysis data.
 """
 
+from __future__ import annotations
+
 import sqlite3
 import threading
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from datetime import datetime
 from contextlib import contextmanager
 import json
+import re
 
 from .index_schema import IndexSchema
+
+if TYPE_CHECKING:
+    from .models import BlockInfo, DeepClassInfo, DeepMethodInfo, DependencyInfo
+
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class IndexStore:
@@ -344,36 +352,60 @@ class IndexStore:
                 if not source_symbol_id:
                     continue
 
-                conn.execute(
-                    """
-                    INSERT INTO dependencies (
-                        source_symbol_id, target_symbol_id, target_external,
-                        kind, resolution, confidence, evidence_json, count
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                    (
-                        source_symbol_id,
-                        dep.get("target_symbol_id"),
-                        dep.get("target_external"),
-                        dep["kind"],
-                        dep["resolution"],
-                        dep["confidence"],
-                        json.dumps(dep["evidence"]),
-                        1,
-                    ),
+                # Schema drift protection: some schemas use "kind", some "dependency_kind".
+                params = (
+                    source_symbol_id,
+                    dep.get("target_symbol_id"),
+                    dep.get("target_external"),
+                    dep.get("kind", ""),
+                    dep.get("resolution", ""),
+                    dep.get("confidence", 0.0),
+                    json.dumps(dep.get("evidence", {})),
+                    1,
                 )
+
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO dependencies (
+                            source_symbol_id, target_symbol_id, target_external,
+                            dependency_kind, resolution, confidence, evidence_json, count
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        params,
+                    )
+                except sqlite3.OperationalError:
+                    conn.execute(
+                        """
+                        INSERT INTO dependencies (
+                            source_symbol_id, target_symbol_id, target_external,
+                            kind, resolution, confidence, evidence_json, count
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        params,
+                    )
 
     def get_dependencies_by_symbol(self, symbol_id: int) -> List[Dict[str, Any]]:
         """Get all dependencies for a symbol."""
         with self._get_connection() as conn:
-            cursor = conn.execute(
-                """
-                SELECT dependency_id, target_symbol_id, target_external,
-                       kind, resolution, confidence, evidence_json, count
-                FROM dependencies WHERE source_symbol_id = ?
-            """,
-                (symbol_id,),
-            )
+            try:
+                cursor = conn.execute(
+                    """
+                    SELECT dependency_id, target_symbol_id, target_external,
+                           dependency_kind, resolution, confidence, evidence_json, count
+                    FROM dependencies WHERE source_symbol_id = ?
+                    """,
+                    (symbol_id,),
+                )
+            except sqlite3.OperationalError:
+                cursor = conn.execute(
+                    """
+                    SELECT dependency_id, target_symbol_id, target_external,
+                           kind, resolution, confidence, evidence_json, count
+                    FROM dependencies WHERE source_symbol_id = ?
+                    """,
+                    (symbol_id,),
+                )
 
             dependencies = []
             for row in cursor.fetchall():
@@ -479,15 +511,27 @@ class IndexStore:
     def bulk_insert_dependencies(self, dependencies_data: List[Tuple]) -> None:
         """Bulk insert dependencies for better performance."""
         with self.transaction() as conn:
-            conn.executemany(
-                """
-                INSERT INTO dependencies (
-                    source_symbol_id, target_external, kind, resolution,
-                    confidence, evidence_json
-                ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-                dependencies_data,
-            )
+            # Schema drift protection: "kind" vs "dependency_kind"
+            try:
+                conn.executemany(
+                    """
+                    INSERT INTO dependencies (
+                        source_symbol_id, target_external, dependency_kind, resolution,
+                        confidence, evidence_json
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    dependencies_data,
+                )
+            except sqlite3.OperationalError:
+                conn.executemany(
+                    """
+                    INSERT INTO dependencies (
+                        source_symbol_id, target_external, kind, resolution,
+                        confidence, evidence_json
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    dependencies_data,
+                )
 
     def get_statistics(self) -> Dict[str, Any]:
         """Get database statistics."""
@@ -495,9 +539,17 @@ class IndexStore:
             stats = {}
 
             # Count records in each table
-            tables = ["files", "symbols", "blocks", "dependencies", "attribute_access"]
+            tables = ("files", "symbols", "blocks", "dependencies", "attribute_access")
+
+            def _quote_ident(name: str) -> str:
+                # sqlite identifiers cannot be parametrized; validate + quote
+                if not _IDENT_RE.match(name):
+                    raise ValueError(f"Invalid identifier: {name!r}")
+                return f'"{name}"'
+
             for table in tables:
-                cursor = conn.execute(f"SELECT COUNT(*) FROM {table}")
+                sql = "SELECT COUNT(*) FROM " + _quote_ident(table)
+                cursor = conn.execute(sql)
                 stats[f"{table}_count"] = cursor.fetchone()[0]
 
             # Get database size
@@ -528,7 +580,7 @@ class IndexStore:
         """Clear all data from the database."""
         with self.transaction() as conn:
             # Delete in reverse dependency order
-            tables = [
+            tables = (
                 "attribute_access",
                 "dependencies",
                 "blocks",
@@ -539,11 +591,17 @@ class IndexStore:
                 "refactoring_decisions",
                 "problems",
                 "analysis_runs",
-            ]
+            )
+
+            def _quote_ident(name: str) -> str:
+                if not _IDENT_RE.match(name):
+                    raise ValueError(f"Invalid identifier: {name!r}")
+                return f'"{name}"'
 
             for table in tables:
                 try:
-                    conn.execute(f"DELETE FROM {table}")
+                    sql = "DELETE FROM " + _quote_ident(table)
+                    conn.execute(sql)
                 except sqlite3.OperationalError:
                     # Table might not exist
                     pass
@@ -552,7 +610,7 @@ class IndexStore:
 
     # Model serialization methods for enhanced data models
 
-    def store_deep_method_info(self, method_info: "DeepMethodInfo") -> int:
+    def store_deep_method_info(self, method_info: DeepMethodInfo) -> int:
         """Store a DeepMethodInfo object to the database."""
         from .index_schema import IndexSchema
 
@@ -622,7 +680,7 @@ class IndexStore:
 
             return cursor.lastrowid
 
-    def store_block_info(self, block_info: "BlockInfo", symbol_id: int) -> int:
+    def store_block_info(self, block_info: BlockInfo, symbol_id: int) -> int:
         """Store a BlockInfo object to the database."""
         from .index_schema import IndexSchema
 
@@ -676,7 +734,7 @@ class IndexStore:
 
     def store_dependency_info(
         self,
-        dependency_info: "DependencyInfo",
+        dependency_info: DependencyInfo,
         source_symbol_id: int,
         target_symbol_id: Optional[int] = None,
     ) -> int:
@@ -709,7 +767,7 @@ class IndexStore:
 
             return cursor.lastrowid
 
-    def store_deep_class_info(self, class_info: "DeepClassInfo") -> int:
+    def store_deep_class_info(self, class_info: DeepClassInfo) -> int:
         """Store a DeepClassInfo object to the database."""
         from .index_schema import IndexSchema
 
@@ -776,7 +834,7 @@ class IndexStore:
 
             return cursor.lastrowid
 
-    def bulk_store_method_infos(self, method_infos: List["DeepMethodInfo"]) -> List[int]:
+    def bulk_store_method_infos(self, method_infos: List[DeepMethodInfo]) -> List[int]:
         """Bulk store multiple DeepMethodInfo objects."""
         from .index_schema import IndexSchema
 
@@ -850,9 +908,7 @@ class IndexStore:
 
         return symbol_ids
 
-        return symbol_ids
-
-    def bulk_store_block_infos(self, block_infos: List[Tuple["BlockInfo", int]]) -> List[int]:
+    def bulk_store_block_infos(self, block_infos: List[Tuple[BlockInfo, int]]) -> List[int]:
         """Bulk store multiple BlockInfo objects with their symbol IDs."""
         from .index_schema import IndexSchema
 
@@ -909,7 +965,7 @@ class IndexStore:
 
         return block_ids
 
-    def get_deep_method_info(self, qualified_name: str) -> Optional["DeepMethodInfo"]:
+    def get_deep_method_info(self, qualified_name: str) -> Optional[DeepMethodInfo]:
         """Retrieve a DeepMethodInfo object by qualified name."""
         from .models import (
             DeepMethodInfo,
@@ -1009,7 +1065,7 @@ class IndexStore:
                 metadata=metadata_dict,
             )
 
-    def get_all_deep_method_infos(self) -> List["DeepMethodInfo"]:
+    def get_all_deep_method_infos(self) -> List[DeepMethodInfo]:
         """Retrieve all DeepMethodInfo objects from the database."""
         from .models import (
             DeepMethodInfo,
@@ -1076,8 +1132,8 @@ class IndexStore:
                     file_reference=FileReference(file_path, line_start, line_end),
                     signature=signature or f"{name}()",
                     ast_fingerprint=ast_fingerprint or "",
-                    token_fingerprint="",  # Not stored in current schema
-                    operation_signature="",  # Not stored in current schema
+                    token_fingerprint="",  # nosec B106 - not a password, placeholder for schema
+                    operation_signature="",  # nosec B106 - placeholder
                     semantic_category=semantic_category,
                     responsibility_markers=responsibility_markers,
                     complexity_score=complexity_score or 0,

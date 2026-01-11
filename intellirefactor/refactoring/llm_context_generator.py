@@ -10,12 +10,13 @@ Generates structured context and prompts for LLM-assisted refactoring:
 
 from __future__ import annotations
 
+import ast
 import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -296,7 +297,14 @@ class LLMContextGenerator:
         deps: Set[str] = set()
 
         try:
-            tree = compile(code_snippet, "<snippet>", "exec", dont_inherit=True, optimize=0, ast.PyCF_ONLY_AST)  # type: ignore[arg-type]
+            tree = compile(
+                code_snippet,
+                "<snippet>",
+                "exec",
+                flags=ast.PyCF_ONLY_AST,
+                dont_inherit=True,
+                optimize=0,
+            )
             for node in ast.walk(tree):  # type: ignore[name-defined]
                 if isinstance(node, ast.Import):  # type: ignore[name-defined]
                     for alias in node.names:

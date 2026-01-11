@@ -16,8 +16,11 @@ import sqlite3
 import logging
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
+import re
 
 from .index_store import IndexStore
+
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass
@@ -69,6 +72,16 @@ class IndexQuery:
         self.store = index_store
         self.logger = logging.getLogger(__name__)
         self._query_cache = {}  # Simple query result cache
+        self._schema_cache: Dict[str, Any] = {}
+
+        # allowlist for dynamic column selection (prevents SQL injection)
+        self._symbol_fingerprint_cols = {"token_fingerprint", "ast_fingerprint"}
+        self._block_fingerprint_cols = {"normalized_fingerprint", "token_fingerprint", "ast_fingerprint"}
+
+    def _quote_ident(self, name: str) -> str:
+        if not _IDENT_RE.match(name):
+            raise ValueError(f"Invalid identifier: {name!r}")
+        return f'"{name}"'
 
     # Duplicate detection queries
 
@@ -89,19 +102,23 @@ class IndexQuery:
         if cache_key in self._query_cache:
             return self._query_cache[cache_key]
 
-        with self.store._get_connection() as conn:
-            cursor = conn.execute(
-                f"""
-                SELECT {fingerprint_type}, COUNT(*) as count,
-                       GROUP_CONCAT(symbol_id) as symbol_ids
-                FROM symbols 
-                WHERE {fingerprint_type} IS NOT NULL AND {fingerprint_type} != ''
-                GROUP BY {fingerprint_type}
-                HAVING count >= ?
-                ORDER BY count DESC
-            """,
-                (min_group_size,),
+        if fingerprint_type not in self._symbol_fingerprint_cols:
+            raise ValueError(
+                f"Unsupported fingerprint_type={fingerprint_type!r}. "
+                f"Allowed: {sorted(self._symbol_fingerprint_cols)}"
             )
+
+        with self.store._get_connection() as conn:
+            col = self._quote_ident(fingerprint_type)
+            sql = (
+                "SELECT " + col + ", COUNT(*) as count, GROUP_CONCAT(symbol_id) as symbol_ids "
+                "FROM symbols "
+                "WHERE " + col + " IS NOT NULL AND " + col + " != '' "
+                "GROUP BY " + col + " "
+                "HAVING count >= ? "
+                "ORDER BY count DESC"
+            )
+            cursor = conn.execute(sql, (min_group_size,))
 
             duplicate_groups = []
             for row in cursor.fetchall():
@@ -210,21 +227,24 @@ class IndexQuery:
         Returns:
             List of block clone groups
         """
-        with self.store._get_connection() as conn:
-            cursor = conn.execute(
-                f"""
-                SELECT {fingerprint_type}, COUNT(*) as count,
-                       GROUP_CONCAT(block_id) as block_ids
-                FROM blocks 
-                WHERE {fingerprint_type} IS NOT NULL 
-                  AND {fingerprint_type} != ''
-                  AND lines_of_code >= ?
-                GROUP BY {fingerprint_type}
-                HAVING count >= 2
-                ORDER BY count DESC
-            """,
-                (min_lines,),
+        if fingerprint_type not in self._block_fingerprint_cols:
+            raise ValueError(
+                f"Unsupported fingerprint_type={fingerprint_type!r}. "
+                f"Allowed: {sorted(self._block_fingerprint_cols)}"
             )
+
+        with self.store._get_connection() as conn:
+            col = self._quote_ident(fingerprint_type)
+            sql = (
+                "SELECT " + col + ", COUNT(*) as count, GROUP_CONCAT(block_id) as block_ids "
+                "FROM blocks "
+                "WHERE " + col + " IS NOT NULL AND " + col + " != '' "
+                "AND lines_of_code >= ? "
+                "GROUP BY " + col + " "
+                "HAVING count >= 2 "
+                "ORDER BY count DESC"
+            )
+            cursor = conn.execute(sql, (min_lines,))
 
             clone_groups = []
             for row in cursor.fetchall():
@@ -470,15 +490,26 @@ class IndexQuery:
 
             # Get dependencies
             with self.store._get_connection() as conn:
-                cursor = conn.execute(
-                    """
-                    SELECT d.target_external, d.kind, d.confidence
-                    FROM dependencies d
-                    JOIN symbols s ON d.source_symbol_id = s.symbol_id
-                    WHERE s.symbol_uid = ?
-                """,
-                    (current_uid,),
-                )
+                try:
+                    cursor = conn.execute(
+                        """
+                        SELECT d.target_external, d.dependency_kind, d.confidence
+                        FROM dependencies d
+                        JOIN symbols s ON d.source_symbol_id = s.symbol_id
+                        WHERE s.symbol_uid = ?
+                        """,
+                        (current_uid,),
+                    )
+                except sqlite3.OperationalError:
+                    cursor = conn.execute(
+                        """
+                        SELECT d.target_external, d.kind, d.confidence
+                        FROM dependencies d
+                        JOIN symbols s ON d.source_symbol_id = s.symbol_id
+                        WHERE s.symbol_uid = ?
+                        """,
+                        (current_uid,),
+                    )
 
                 for row in cursor.fetchall():
                     target, kind, confidence = row
@@ -490,6 +521,10 @@ class IndexQuery:
                             "confidence": confidence,
                         }
                     )
+                    # Only recurse if target looks like an internal symbol_uid.
+                    # Many rows may store external targets; in that case get_symbol() returns None and we stop.
+                    if isinstance(target, str) and target:
+                        traverse(target, depth + 1)
 
         traverse(symbol_uid, 0)
         return graph
@@ -579,17 +614,15 @@ class IndexQuery:
         if not symbol_ids:
             return []
 
-        placeholders = ",".join("?" * len(symbol_ids))
-        cursor = conn.execute(
-            f"""
-            SELECT s.symbol_uid, s.name, s.qualified_name, s.kind,
-                   s.line_start, s.line_end, s.complexity_score, f.file_path
-            FROM symbols s
-            JOIN files f ON s.file_id = f.file_id
-            WHERE s.symbol_id IN ({placeholders})
-        """,
-            symbol_ids,
+        placeholders = ",".join(["?"] * len(symbol_ids))
+        sql = (
+            "SELECT s.symbol_uid, s.name, s.qualified_name, s.kind, "
+            "s.line_start, s.line_end, s.complexity_score, f.file_path "
+            "FROM symbols s "
+            "JOIN files f ON s.file_id = f.file_id "
+            "WHERE s.symbol_id IN (" + placeholders + ")"
         )
+        cursor = conn.execute(sql, symbol_ids)
 
         symbols = []
         for row in cursor.fetchall():
@@ -677,15 +710,19 @@ class IndexQuery:
             List of modules that import the given module
         """
         with self.store._get_connection() as conn:
-            cursor = conn.execute(
-                """
-                SELECT DISTINCT f.file_path, f.module_name
-                FROM imports i
-                JOIN files f ON i.importer_file_id = f.file_id
-                WHERE i.imported_module_path = ?
-            """,
-                (module_path,),
-            )
+            try:
+                cursor = conn.execute(
+                    """
+                    SELECT DISTINCT f.file_path, f.module_name
+                    FROM imports i
+                    JOIN files f ON i.importer_file_id = f.file_id
+                    WHERE i.imported_module_path = ?
+                    """,
+                    (module_path,),
+                )
+            except sqlite3.OperationalError:
+                # Optional table (depends on schema)
+                return []
 
             importers = []
             for row in cursor.fetchall():
@@ -704,18 +741,32 @@ class IndexQuery:
             List of locations where the symbol is used
         """
         with self.store._get_connection() as conn:
-            cursor = conn.execute(
-                """
-                SELECT d.source_symbol_id, d.target_external, d.kind, d.confidence,
-                       s.symbol_uid, s.name, s.qualified_name, s.kind as symbol_kind,
-                       f.file_path
-                FROM dependencies d
-                JOIN symbols s ON d.source_symbol_id = s.symbol_id
-                JOIN files f ON s.file_id = f.file_id
-                WHERE d.target_external = ?
-            """,
-                (symbol_uid,),
-            )
+            try:
+                cursor = conn.execute(
+                    """
+                    SELECT d.source_symbol_id, d.target_external, d.dependency_kind, d.confidence,
+                           s.symbol_uid, s.name, s.qualified_name, s.kind as symbol_kind,
+                           f.file_path
+                    FROM dependencies d
+                    JOIN symbols s ON d.source_symbol_id = s.symbol_id
+                    JOIN files f ON s.file_id = f.file_id
+                    WHERE d.target_external = ?
+                    """,
+                    (symbol_uid,),
+                )
+            except sqlite3.OperationalError:
+                cursor = conn.execute(
+                    """
+                    SELECT d.source_symbol_id, d.target_external, d.kind, d.confidence,
+                           s.symbol_uid, s.name, s.qualified_name, s.kind as symbol_kind,
+                           f.file_path
+                    FROM dependencies d
+                    JOIN symbols s ON d.source_symbol_id = s.symbol_id
+                    JOIN files f ON s.file_id = f.file_id
+                    WHERE d.target_external = ?
+                    """,
+                    (symbol_uid,),
+                )
 
             usages = []
             for row in cursor.fetchall():
@@ -746,18 +797,22 @@ class IndexQuery:
             List of all references to the symbol
         """
         with self.store._get_connection() as conn:
-            cursor = conn.execute(
-                """
-                SELECT r.reference_type, r.line_number, r.column_start, r.column_end,
-                       r.context, f.file_path, s.symbol_uid, s.name
-                FROM references r
-                JOIN files f ON r.file_id = f.file_id
-                JOIN symbols s ON r.symbol_id = s.symbol_id
-                WHERE r.target_symbol_uid = ?
-                ORDER BY f.file_path, r.line_number
-            """,
-                (symbol_uid,),
-            )
+            try:
+                cursor = conn.execute(
+                    """
+                    SELECT r.reference_type, r.line_number, r.column_start, r.column_end,
+                           r.context, f.file_path, s.symbol_uid, s.name
+                    FROM references r
+                    JOIN files f ON r.file_id = f.file_id
+                    JOIN symbols s ON r.symbol_id = s.symbol_id
+                    WHERE r.target_symbol_uid = ?
+                    ORDER BY f.file_path, r.line_number
+                    """,
+                    (symbol_uid,),
+                )
+            except sqlite3.OperationalError:
+                # Optional table (depends on schema)
+                return []
 
             references = []
             for row in cursor.fetchall():

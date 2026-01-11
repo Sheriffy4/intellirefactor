@@ -5,6 +5,8 @@ This module defines Protocol interfaces that ensure compatibility with different
 Python project structures and provide a consistent API across all components.
 """
 
+from __future__ import annotations
+
 import ast
 from typing import Protocol, Dict, List, Optional, Any, Union
 from pathlib import Path
@@ -96,9 +98,10 @@ class FileAnalyzerProtocol(Protocol):
 
     def suggest_improvements(self, file_path: Union[str, Path]) -> List[str]:
         """Suggest improvements for a file."""
+        ...
 
 
-...
+# (other protocols / base classes below)
 
 
 class RefactoringSystemProtocol(Protocol):
@@ -108,7 +111,9 @@ class RefactoringSystemProtocol(Protocol):
         self, analysis_data: Dict[str, Any]
     ) -> List[GenericRefactoringOpportunity]:
         """Identify refactoring opportunities from analysis data."""
-        ...
+        # [IR_DELEGATED] Auto-generated wrapper (functional decomposition)
+        from intellirefactor.unified.analysis import detection_identify_opportunities as __ir_unified_detection_identify_opportunities
+        return __ir_unified_detection_identify_opportunities(self, analysis_data)
 
     def assess_opportunity_quality(self, opportunity: GenericRefactoringOpportunity) -> float:
         """Assess the quality/value of a refactoring opportunity."""

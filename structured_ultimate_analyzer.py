@@ -1004,7 +1004,7 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
             {
                 "name": analysis_name,
                 "error": f"Артефакт невалиден: {reason}",
-                "command": result.get("command", "unknown"),
+                "command": result.get("command", "unknown") if isinstance(result, dict) else "unknown",
                 "artifact_path": str(artifact_path),
             }
         )
@@ -1190,7 +1190,30 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
             timeout_minutes=10,
             analysis_name_for_save="Выявление возможностей рефакторинга",
         )
+        
+        # Проверяем, найдены ли возможности для целевого файла
+        target_opportunities_found = False
         if success:
+            for json_file in self.dirs["json"].glob("refactoring_opportunities_*.json"):
+                try:
+                    with open(json_file, 'r', encoding='utf-8') as f:
+                        opportunities = json.load(f)
+                        target_name = self.target_file.name
+                        for opp in opportunities:
+                            if any(target_name in tf for tf in opp.get("target_files", [])):
+                                target_opportunities_found = True
+                                break
+                        if target_opportunities_found:
+                            break
+                except (json.JSONDecodeError, OSError):
+                    continue
+        
+        # Если возможности для целевого файла не найдены, создаем их на основе анализа
+        if not target_opportunities_found:
+            self.logger.info("[OPPORTUNITIES] Создание возможностей на основе найденных проблем...")
+            self._create_target_file_opportunities()
+        
+        if success or target_opportunities_found:
             return True
 
         # fallback markdown
@@ -1203,6 +1226,161 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
             "report",
         )
         return ok
+
+    def _create_target_file_opportunities(self) -> bool:
+        """Создает возможности рефакторинга для целевого файла на основе найденных проблем."""
+        try:
+            opportunities = []
+            
+            # Получаем данные из анализов
+            duplicates_count = self._get_duplicates_count()
+            smells_count = self._get_architectural_smells_count()
+            
+            # Читаем canonical snapshot для получения информации о классах и функциях
+            canonical_file = self.dirs["json"] / f"canonical_analysis_snapshot_{self.timestamp}.json"
+            classes_info = []
+            large_functions = []
+            
+            if canonical_file.exists():
+                try:
+                    with open(canonical_file, 'r', encoding='utf-8') as f:
+                        canonical_data = json.load(f)
+                        classes_info = canonical_data.get("classes", [])
+                        
+                        # Ищем большие функции/методы
+                        for cls in classes_info:
+                            for method in cls.get("methods", []):
+                                if method.get("lines", 0) > 50:  # Большие методы
+                                    large_functions.append({
+                                        "class": cls.get("name", "Unknown"),
+                                        "method": method.get("name", "Unknown"),
+                                        "lines": method.get("lines", 0),
+                                        "start_line": method.get("start_line", 0)
+                                    })
+                except (json.JSONDecodeError, OSError):
+                    pass
+            
+            # Создаем возможности на основе найденных проблем
+            opportunity_id = 1
+            
+            # 1. Возможность для устранения дубликатов
+            if duplicates_count > 0:
+                opportunities.append({
+                    "id": f"eliminate_duplicates_{self.target_file.stem}_{self.timestamp}",
+                    "type": "duplicate_elimination",
+                    "priority": 9,
+                    "description": f"Eliminate {duplicates_count} duplicate code blocks",
+                    "target_files": [str(self.target_file.relative_to(self.project_path))],
+                    "estimated_impact": {
+                        "complexity_reduction": 0.6,
+                        "maintainability_improvement": 0.7,
+                        "automation_potential": 0.8
+                    },
+                    "prerequisites": [
+                        "Analyze duplicate patterns",
+                        "Extract common methods",
+                        "Test refactored code"
+                    ],
+                    "automation_confidence": 0.8,
+                    "risk_level": "medium"
+                })
+                opportunity_id += 1
+            
+            # 2. Возможность для исправления архитектурных запахов
+            if smells_count > 0:
+                opportunities.append({
+                    "id": f"fix_architectural_smells_{self.target_file.stem}_{self.timestamp}",
+                    "type": "architectural_improvement",
+                    "priority": 8,
+                    "description": f"Fix {smells_count} architectural code smells",
+                    "target_files": [str(self.target_file.relative_to(self.project_path))],
+                    "estimated_impact": {
+                        "complexity_reduction": 0.5,
+                        "maintainability_improvement": 0.6,
+                        "automation_potential": 0.7
+                    },
+                    "prerequisites": [
+                        "Identify smell patterns",
+                        "Apply refactoring patterns",
+                        "Validate improvements"
+                    ],
+                    "automation_confidence": 0.7,
+                    "risk_level": "medium"
+                })
+                opportunity_id += 1
+            
+            # 3. Возможности для больших функций
+            for func_info in large_functions[:3]:  # Ограничиваем до 3 самых больших
+                opportunities.append({
+                    "id": f"decompose_large_method_{func_info['class']}_{func_info['method']}_{self.timestamp}",
+                    "type": "method_decomposition",
+                    "priority": 7,
+                    "description": f"Decompose large method {func_info['class']}.{func_info['method']} ({func_info['lines']} lines)",
+                    "target_files": [str(self.target_file.relative_to(self.project_path))],
+                    "estimated_impact": {
+                        "complexity_reduction": 0.4,
+                        "maintainability_improvement": 0.5,
+                        "automation_potential": 0.6
+                    },
+                    "prerequisites": [
+                        "Identify logical blocks",
+                        "Extract helper methods",
+                        "Preserve functionality"
+                    ],
+                    "automation_confidence": 0.6,
+                    "risk_level": "low",
+                    "target_location": {
+                        "class": func_info['class'],
+                        "method": func_info['method'],
+                        "start_line": func_info['start_line'],
+                        "lines": func_info['lines']
+                    }
+                })
+                opportunity_id += 1
+            
+            # 4. God Object разбиение (если есть классы с большим количеством методов)
+            for cls in classes_info:
+                method_count = len(cls.get("methods", []))
+                if method_count > 20:  # God Object
+                    opportunities.append({
+                        "id": f"split_god_object_{cls.get('name', 'Unknown')}_{self.timestamp}",
+                        "type": "god_object_splitting",
+                        "priority": 9,
+                        "description": f"Split God Object {cls.get('name', 'Unknown')} with {method_count} methods",
+                        "target_files": [str(self.target_file.relative_to(self.project_path))],
+                        "estimated_impact": {
+                            "complexity_reduction": 0.7,
+                            "maintainability_improvement": 0.8,
+                            "automation_potential": 0.5
+                        },
+                        "prerequisites": [
+                            "Analyze class responsibilities",
+                            "Identify cohesive groups",
+                            "Create specialized classes"
+                        ],
+                        "automation_confidence": 0.5,
+                        "risk_level": "high",
+                        "target_location": {
+                            "class": cls.get('name', 'Unknown'),
+                            "methods": method_count,
+                            "start_line": cls.get('start_line', 0),
+                            "lines": cls.get('lines', 0)
+                        }
+                    })
+            
+            # Сохраняем созданные возможности
+            if opportunities:
+                opportunities_file = self.dirs["json"] / f"target_file_opportunities_{self.timestamp}.json"
+                self._write_json(opportunities_file, opportunities)
+                self.logger.info(f"[OPPORTUNITIES] Создано {len(opportunities)} возможностей для целевого файла")
+                return True
+            else:
+                self.logger.warning("[OPPORTUNITIES] Не удалось создать возможности - недостаточно данных")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"[OPPORTUNITIES] Ошибка создания возможностей: {e}")
+            return False
 
     def run_enhanced_analysis(self) -> bool:
         self.logger.info("[ENHANCED] Запуск расширенного анализа...")
@@ -1229,7 +1407,7 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
             timeout_minutes=10,
         )
         self._save_analysis_result("Расширенный анализ", result)
-        return bool(result.get("success"))
+        return bool(result.get("success")) if isinstance(result, dict) else False
 
     def manage_knowledge_base(self) -> bool:
         self.logger.info("[KNOWLEDGE] Работа с базой знаний...")
@@ -1247,7 +1425,7 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
                 timeout_minutes=5,
             )
             self._save_analysis_result(f"База знаний - {description}", result)
-            if result.get("success"):
+            if isinstance(result, dict) and result.get("success"):
                 success_count += 1
 
         # markdown fallback
@@ -1313,7 +1491,7 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
                 timeout_minutes=3,
             )
             self._save_analysis_result(f"Система - {description}", result)
-            if result.get("success"):
+            if isinstance(result, dict) and result.get("success"):
                 success_count += 1
 
         # fallback md
@@ -1460,9 +1638,93 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
 
         return True
 
+    def run_expert_refactoring_analysis(self) -> bool:
+        """Запуск экспертного анализа для рефакторинга."""
+        self.logger.info("[EXPERT] Запуск экспертного анализа для рефакторинга...")
+        
+        try:
+            # Import the expert analyzer
+            from intellirefactor.analysis.expert import ExpertRefactoringAnalyzer
+            
+            # Initialize the expert analyzer
+            expert_analyzer = ExpertRefactoringAnalyzer(
+                project_root=str(self.project_path),
+                target_module=str(self.target_file),
+                output_dir=str(self.dirs["json"])
+            )
+            
+            # Run the expert analysis
+            result = expert_analyzer.analyze_for_expert_refactoring()
+            
+            # Save the results
+            expert_json_path = self.dirs["json"] / f"expert_analysis_{self.timestamp}.json"
+            expert_report_path = self.dirs["reports"] / f"expert_analysis_report_{self.timestamp}.md"
+            
+            # Save JSON result
+            import json
+            with open(expert_json_path, 'w', encoding='utf-8') as f:
+                json.dump(result.to_dict(), f, indent=2, ensure_ascii=False)
+            
+            # Generate markdown report
+            report_content = expert_analyzer._generate_markdown_report(result)
+            with open(expert_report_path, 'w', encoding='utf-8') as f:
+                f.write(report_content)
+            
+            # Update generated files list
+            self.analysis_results.setdefault("generated_files", []).extend([
+                str(expert_json_path),
+                str(expert_report_path)
+            ])
+            
+            # Save analysis result
+            self._save_analysis_result(
+                "Экспертный анализ для рефакторинга",
+                {
+                    "success": True,
+                    "stdout": f"Expert analysis completed. Quality score: {result.analysis_quality_score:.1f}/100",
+                    "stderr": "",
+                    "returncode": 0,
+                    "command": "expert_refactoring_analysis",
+                    "quality_score": result.analysis_quality_score,
+                    "risk_level": result.risk_assessment.value,
+                    "recommendations_count": len(result.recommendations)
+                }
+            )
+            
+            self.logger.info(f"[EXPERT] Анализ завершен. Качество: {result.analysis_quality_score:.1f}/100, Риск: {result.risk_assessment.value}")
+            return True
+            
+        except ImportError as e:
+            self.logger.error(f"[EXPERT] Не удалось импортировать экспертный анализатор: {e}")
+            self._save_analysis_result(
+                "Экспертный анализ для рефакторинга",
+                {
+                    "success": False,
+                    "stdout": "",
+                    "stderr": f"Import error: {e}",
+                    "returncode": -1,
+                    "command": "expert_refactoring_analysis"
+                }
+            )
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"[EXPERT] Ошибка экспертного анализа: {e}")
+            self._save_analysis_result(
+                "Экспертный анализ для рефакторинга",
+                {
+                    "success": False,
+                    "stdout": "",
+                    "stderr": str(e),
+                    "returncode": -1,
+                    "command": "expert_refactoring_analysis"
+                }
+            )
+            return False
+
     def apply_automatic_refactoring_final(self) -> bool:
-        """Финальный этап: dry-run refactor/apply на копии файла в refactored/."""
-        self.logger.info("[AUTO-REFACTOR] Dry-run автоматического рефакторинга...")
+        """Финальный этап: применение автоматического рефакторинга с возможностями."""
+        self.logger.info("[AUTO-REFACTOR] Применение автоматического рефакторинга...")
 
         refactored_file = (
             self.dirs["refactored"] / f"{self.target_file.stem}_refactored_{self.timestamp}{self.target_file.suffix}"
@@ -1474,33 +1736,84 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
             self.logger.error("[AUTO-REFACTOR] Не удалось скопировать файл: %s", e)
             return False
 
-        commands: List[Tuple[List[str], str]] = [
-            (["refactor", str(refactored_file), "--dry-run"], "refactor --dry-run"),
-            (["analyze", str(refactored_file), "--format", "json"], "analyze json"),
-        ]
+        # Ищем файл с возможностями рефакторинга для целевого файла
+        opportunities_file = None
+        for json_file in self.dirs["json"].glob("refactoring_opportunities_*.json"):
+            try:
+                with open(json_file, 'r', encoding='utf-8') as f:
+                    opportunities = json.load(f)
+                    # Проверяем, есть ли возможности для нашего файла
+                    target_name = self.target_file.name
+                    for opp in opportunities:
+                        if any(target_name in tf for tf in opp.get("target_files", [])):
+                            opportunities_file = json_file
+                            break
+                    if opportunities_file:
+                        break
+            except (json.JSONDecodeError, OSError):
+                continue
+
+        commands: List[Tuple[List[str], str]] = []
+        
+        if opportunities_file:
+            self.logger.info(f"[AUTO-REFACTOR] Найден файл возможностей: {opportunities_file}")
+            # Применяем возможности рефакторинга
+            commands.extend([
+                (["apply", str(opportunities_file), "--target", str(refactored_file)], "apply opportunities"),
+                (["analyze", str(refactored_file), "--format", "json"], "analyze refactored"),
+            ])
+        else:
+            self.logger.warning("[AUTO-REFACTOR] Возможности для целевого файла не найдены, выполняем базовый рефакторинг")
+            # Базовые команды рефакторинга
+            commands.extend([
+                (["refactor", str(refactored_file), "--safe"], "safe refactor"),
+                (["analyze", str(refactored_file), "--format", "json"], "analyze refactored"),
+            ])
 
         success_count = 0
+        applied_changes = False
+        
         for i, (cmd, desc) in enumerate(commands, 1):
             result = self._run_intellirefactor_command_with_timeout(
                 cmd,
                 output_file=f"refactoring_step_{i}_{self.timestamp}.json",
-                timeout_minutes=5,
+                timeout_minutes=10,  # Увеличиваем таймаут для реального рефакторинга
             )
             self._save_analysis_result(f"Автоматический рефакторинг - {desc}", result)
-            if result.get("success"):
+            if isinstance(result, dict) and result.get("success"):
                 success_count += 1
+                if "apply" in desc or "refactor" in desc:
+                    applied_changes = True
+
+        # Проверяем, были ли применены изменения
+        changes_detected = False
+        if refactored_file.exists() and applied_changes:
+            try:
+                original_size = self.target_file.stat().st_size
+                refactored_size = refactored_file.stat().st_size
+                changes_detected = abs(original_size - refactored_size) > 10  # Минимальное изменение
+            except OSError:
+                pass
 
         report = {
             "original_file": str(self.target_file),
             "refactored_file": str(refactored_file),
+            "opportunities_file": str(opportunities_file) if opportunities_file else None,
             "timestamp": self.timestamp,
             "operations_attempted": len(commands),
             "operations_successful": success_count,
             "success_rate": (success_count / len(commands) * 100) if commands else 0,
-            "status": "completed_dry_run",
-            "note": "Операции выполнены в dry-run (безопасно)",
+            "status": "completed_with_changes" if changes_detected else "completed_no_changes",
+            "changes_applied": applied_changes,
+            "changes_detected": changes_detected,
+            "note": "Реальный рефакторинг применен" if applied_changes else "Изменения не применены",
         }
         self._write_json(self.dirs["json"] / f"refactoring_report_{self.timestamp}.json", report)
+
+        if changes_detected:
+            self.logger.info(f"[AUTO-REFACTOR] Изменения применены: {refactored_file}")
+        else:
+            self.logger.warning("[AUTO-REFACTOR] Изменения не обнаружены или не применены")
 
         return success_count > 0
 
@@ -1511,16 +1824,42 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
     def generate_file_requirements(self) -> bool:
         self.logger.info("[DOCS] Requirements.md...")
         
+        dst = self.dirs["docs"] / "Requirements.md"
+        
         # Сначала пытаемся создать через базовый метод
         ok = bool(super().generate_file_requirements())
 
         src = self.output_dir / "Requirements.md"
-        dst = self.dirs["docs"] / "Requirements.md"
         if src.exists() and src != dst:
             self._safe_move(src, dst)
 
-        # Если файл не создался или создался некачественно, создаем улучшенную версию
-        if not dst.exists() or dst.stat().st_size < 500:
+        # Проверяем, является ли созданный файл fallback или содержит реальные данные
+        should_enhance = True
+        if dst.exists():
+            try:
+                content = dst.read_text(encoding="utf-8")
+                # Если файл содержит реальные метрики из анализа, не заменяем его
+                # Проверяем на наличие конкретных метрик, а не общих фраз
+                has_real_metrics = any(keyword in content for keyword in [
+                    "строк кода (", "байт)", "Характеристики файла", "God Objects:", 
+                    "Большие функции:", "дубликатов:", "запахов:", "возможностей рефакторинга"
+                ])
+                # Исключаем fallback индикаторы
+                is_fallback = any(fallback_indicator in content for fallback_indicator in [
+                    "Выполненные анализы", "системой контекстного анализа IntelliRefactor",
+                    "## Анализы с ошибками"
+                ])
+                
+                if has_real_metrics and not is_fallback:
+                    should_enhance = False
+                    self.logger.info("[DOCS] Requirements.md уже содержит реальные данные анализа")
+                else:
+                    self.logger.info("[DOCS] Requirements.md содержит fallback данные, заменяем на реальные")
+            except Exception as e:
+                self.logger.warning("[DOCS] Ошибка чтения Requirements.md: %s", e)
+
+        # Создаем улучшенную версию, если нужно
+        if should_enhance:
             self.logger.info("[DOCS] Создание улучшенного Requirements.md на основе реальных данных...")
             enhanced_content = self._generate_enhanced_requirements()
             self._write_text(dst, enhanced_content)
@@ -1546,8 +1885,25 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
             if src.exists() and src != dst:
                 self._safe_move(src, dst)
             
-            # Если файл не создался или создался некачественно, создаем улучшенную версию
-            if not dst.exists() or dst.stat().st_size < 500:
+            # Проверяем, является ли созданный файл fallback или содержит реальные данные
+            should_enhance = True
+            if dst.exists():
+                try:
+                    content = dst.read_text(encoding="utf-8")
+                    # Если файл содержит реальные метрики из анализа, не заменяем его
+                    if name == "Design.md":
+                        keywords = ["строк кода", "Архитектурный обзор", "God Object", "Основные классы", "архитектурных запахов"]
+                    else:  # Implementation.md
+                        keywords = ["Оценка времени", "часов", "Этап", "God Objects", "Большие функции", "дубликатов"]
+                    
+                    if any(keyword in content for keyword in keywords):
+                        should_enhance = False
+                        self.logger.info(f"[DOCS] {name} уже содержит реальные данные анализа")
+                except Exception as e:
+                    self.logger.warning(f"[DOCS] Ошибка чтения {name}: %s", e)
+            
+            # Создаем улучшенную версию, если нужно
+            if should_enhance:
                 self.logger.info(f"[DOCS] Создание улучшенного {name} на основе реальных данных...")
                 if name == "Design.md":
                     enhanced_content = self._generate_enhanced_design()
@@ -2379,7 +2735,20 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
                 "### Основные классы",
                 "",
             ])
-            for cls in classes[:5]:  # Показываем первые 5 классов
+            
+            # Сначала показываем God Objects и классы с методами
+            important_classes = []
+            simple_classes = []
+            
+            for cls in classes:
+                methods_count = len(cls.get("methods", []))
+                if methods_count > 0 or cls.get("is_god_object", False):
+                    important_classes.append(cls)
+                else:
+                    simple_classes.append(cls)
+            
+            # Показываем важные классы первыми
+            for cls in important_classes[:5]:
                 name = cls.get("name", "Unknown")
                 methods_count = len(cls.get("methods", []))
                 line_start = cls.get("line", "?")
@@ -2391,6 +2760,15 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
                     f"- Статус: {'⚠️ God Object' if cls.get('is_god_object', False) else '✅ Нормальный размер'}",
                     "",
                 ])
+            
+            # Если есть место, показываем простые классы
+            remaining_slots = 5 - len(important_classes)
+            if remaining_slots > 0:
+                lines.append("#### Вспомогательные классы")
+                for cls in simple_classes[:remaining_slots]:
+                    name = cls.get("name", "Unknown")
+                    lines.append(f"- `{name}` (константы/исключения)")
+                lines.append("")
         
         if functions:
             lines.extend([
@@ -2510,6 +2888,14 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
         # Оценка сложности
         complexity_score = quality_metrics.get("complexity_score", 0)
         
+        # Реалистичные оценки времени
+        duplicates_hours = max(1, duplicates_count // 75) if duplicates_count > 0 else 0
+        smells_hours = max(1, smells_count // 150) if smells_count > 0 else 0
+        god_objects_hours = len(god_objects) * 2
+        large_functions_hours = max(1, len(large_functions) // 2) if large_functions else 0
+        
+        total_estimated_hours = duplicates_hours + smells_hours + god_objects_hours + large_functions_hours + 2
+        
         lines = [
             "# План реализации рефакторинга",
             "",
@@ -2525,19 +2911,11 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
             f"- **Найдено проблем:** {smells_count + duplicates_count + len(god_objects) + len(large_functions)}",
             f"- **Возможностей рефакторинга:** {opportunities_count}",
             "",
-        ]
-        
-        # Оценка времени
-        estimated_hours = max(2, (total_lines // 200) + len(god_objects) * 2 + len(large_functions))
-        lines.extend([
             "## Оценка времени",
             "",
-            f"- **Предварительная оценка:** {estimated_hours} часов",
+            f"- **Предварительная оценка:** {total_estimated_hours} часов",
             f"- **Рекомендуемый подход:** {'Поэтапный (по компонентам)' if total_lines > 1000 else 'Единый цикл'}",
             "",
-        ])
-        
-        lines.extend([
             "## Этап 1: Подготовка (30 мин)",
             "",
             "### 1.1 Создание резервной копии",
@@ -2555,66 +2933,148 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
             f"python -m intellirefactor analyze {rel.as_posix()} --format json",
             "```",
             "",
-        ])
+        ]
+        
+        etap_number = 2
         
         if duplicates_count > 0:
             lines.extend([
-                f"## Этап 2: Устранение дубликатов ({duplicates_count} групп)",
+                f"## Этап {etap_number}: Устранение дубликатов ({duplicates_count} групп)",
                 "",
-                f"**Время:** ~{max(1, duplicates_count // 3)} часа",
+                f"**Время:** ~{duplicates_hours} часов",
                 "",
-                "### 2.1 Анализ дубликатов",
+                f"### {etap_number}.1 Анализ дубликатов",
                 "```bash",
                 "python -m intellirefactor duplicates blocks . --format json --show-code",
                 "```",
                 "",
-                "### 2.2 Извлечение общих методов",
+                f"### {etap_number}.2 Извлечение общих методов",
                 f"- Обработать {duplicates_count} групп дубликатов",
                 "- Создать общие утилитарные методы",
                 "- Заменить дублированный код вызовами",
                 "",
-                "### 2.3 Проверка",
+                f"### {etap_number}.3 Проверка",
                 "```bash",
                 "python -m pytest . -v",
                 "```",
                 "",
             ])
+            etap_number += 1
         
         if god_objects:
             lines.extend([
-                f"## Этап 3: Разбиение God Objects ({len(god_objects)} классов)",
+                f"## Этап {etap_number}: Разбиение God Objects ({len(god_objects)} классов)",
                 "",
-                f"**Время:** ~{len(god_objects) * 2} часа",
+                f"**Время:** ~{god_objects_hours} часов",
                 "",
             ])
             for i, god in enumerate(god_objects[:3], 1):
                 name = god.get("name", "Unknown")
                 methods_count = len(god.get("methods", []))
                 lines.extend([
-                    f"### 3.{i} Рефакторинг класса `{name}`",
+                    f"### {etap_number}.{i} Рефакторинг класса `{name}`",
                     f"- Методы: {methods_count}",
                     "- Выделить отдельные классы по ответственности",
                     "- Применить принцип единственной ответственности",
                     "",
                 ])
+            etap_number += 1
         
         if large_functions:
             lines.extend([
-                f"## Этап 4: Декомпозиция больших функций ({len(large_functions)})",
+                f"## Этап {etap_number}: Декомпозиция больших функций ({len(large_functions)})",
                 "",
-                f"**Время:** ~{max(1, len(large_functions) // 2)} часа",
+                f"**Время:** ~{large_functions_hours} часов",
                 "",
             ])
             for i, func in enumerate(large_functions[:3], 1):
                 name = func.get("name", "unknown")
                 length = func.get("length_lines", 0)
+                class_name = func.get("class")
+                func_type = "метод" if class_name else "функция"
+                full_name = f"{class_name}.{name}()" if class_name else f"{name}()"
                 lines.extend([
-                    f"### 4.{i} Функция `{name}()`",
+                    f"### {etap_number}.{i} {func_type.title()} `{full_name}`",
                     f"- Текущий размер: {length} строк",
-                    "- Разбить на логические блоки",
-                    "- Извлечь вспомогательные методы",
+                    f"- Разбить на логические блоки",
+                    f"- Извлечь вспомогательные {'методы' if class_name else 'функции'}",
                     "",
                 ])
+            etap_number += 1
+        
+        if smells_count > 0:
+            lines.extend([
+                f"## Этап {etap_number}: Устранение архитектурных запахов ({smells_count})",
+                "",
+                f"**Время:** ~{smells_hours} часов",
+                "",
+                f"### {etap_number}.1 Анализ запахов",
+                "```bash",
+                "python -m intellirefactor smells detect . --format json",
+                "```",
+                "",
+                f"### {etap_number}.2 Применение исправлений",
+                f"- Обработать {smells_count} выявленных проблем",
+                "- Применить рекомендованные паттерны",
+                "- Улучшить читаемость кода",
+                "",
+            ])
+            etap_number += 1
+        
+        lines.extend([
+            f"## Этап {etap_number}: Финальная проверка",
+            "",
+            f"### {etap_number}.1 Полный прогон тестов",
+            "```bash",
+            "python -m pytest . -v --cov",
+            "```",
+            "",
+            f"### {etap_number}.2 Повторный анализ",
+            "```bash",
+            f"python -m intellirefactor analyze {rel.as_posix()} --format json",
+            "```",
+            "",
+            f"### {etap_number}.3 Сравнение метрик",
+            "- Количество строк кода",
+            "- Цикломатическая сложность",
+            "- Покрытие тестами",
+            "- Количество запахов",
+            "",
+            "## Критерии успеха",
+            "",
+            "- ✅ Все тесты проходят",
+        ])
+        
+        if duplicates_count > 0:
+            lines.append(f"- ✅ Уменьшение количества дубликатов на 80%+ (с {duplicates_count} до <{max(1, duplicates_count // 5)})")
+        if god_objects:
+            lines.append("- ✅ Устранение всех God Objects")
+        if large_functions:
+            lines.append("- ✅ Функции не превышают 50 строк")
+        if smells_count > 0:
+            lines.append(f"- ✅ Архитектурные запахи сокращены на 70%+ (с {smells_count} до <{max(1, smells_count // 3)})")
+        
+        lines.extend([
+            "",
+            "## Откат в случае проблем",
+            "",
+            "```bash",
+            f"cp {rel.as_posix()}.backup {rel.as_posix()}",
+            "python -m pytest . -v",
+            "```",
+            "",
+            "## Связанные артефакты",
+            "",
+            f"- Требования: `docs/Requirements.md`",
+            f"- Дизайн: `docs/Design.md`",
+            f"- Исполняемые скрипты: `reports/auto_refactor_{self.timestamp}.sh`",
+            f"- JSON анализы: `json/`",
+            "",
+            "---",
+            "*План создан на основе реальных данных анализа*",
+        ])
+        
+        return "\n".join(lines)
         
         if smells_count > 0:
             lines.extend([
@@ -2776,7 +3236,13 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
                 ],
             ),
             (
-                "Фаза 3: Планирование",
+                "Фаза 3: Экспертный анализ",
+                [
+                    ("Экспертный анализ для рефакторинга", self.run_expert_refactoring_analysis),
+                ],
+            ),
+            (
+                "Фаза 4: Планирование",
                 [
                     ("Выявление возможностей рефакторинга", self.identify_refactoring_opportunities),
                     ("Расширенный анализ", self.run_enhanced_analysis),
@@ -2784,7 +3250,7 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
                 ],
             ),
             (
-                "Фаза 4: Документация",
+                "Фаза 5: Документация",
                 [
                     ("Создание файла требований", self.generate_file_requirements),
                     ("Генерация спецификаций", self.generate_file_specifications),
@@ -2793,7 +3259,7 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
                 ],
             ),
             (
-                "Фаза 5: Планы и отчеты",
+                "Фаза 6: Планы и отчеты",
                 [
                     ("Работа с базой знаний", self.manage_knowledge_base),
                     ("Генерация комплексных отчетов", self.generate_comprehensive_reports),
@@ -2802,7 +3268,7 @@ class StructuredUltimateAnalyzer(ContextualFileAnalyzer):
                 ],
             ),
             (
-                "Фаза 6: Автоматический рефакторинг",
+                "Фаза 7: Автоматический рефакторинг",
                 [
                     ("Применение автоматического рефакторинга (dry-run)", self.apply_automatic_refactoring_final),
                 ],

@@ -977,13 +977,9 @@ self.{component_name} = {ComponentClass}(self.mock_{dependency})
 
     def _get_contraindications(self) -> List[str]:
         """Get contraindications."""
-        return [
-            "small_simple_classes",
-            "performance_critical_tight_loops",
-            "stable_apis_without_clients",
-            "prototype_code",
-            "single_use_scripts",
-        ]
+        # [IR_DELEGATED] Auto-generated wrapper (functional decomposition)
+        from intellirefactor.unified.knowledge import get_contraindications as __ir_unified_get_contraindications
+        return __ir_unified_get_contraindications(self)
 
     def export_metadata(
         self, metadata: RefactoringAutomationMetadata, filepath: str

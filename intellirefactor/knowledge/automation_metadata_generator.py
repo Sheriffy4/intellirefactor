@@ -278,13 +278,9 @@ class AutomationMetadataGenerator:
 
     def _get_contraindications(self) -> List[str]:
         """Get contraindications for applying these patterns."""
-        return [
-            "small_simple_classes",
-            "performance_critical_tight_loops",
-            "stable_apis_without_clients",
-            "prototype_code",
-            "single_use_scripts",
-        ]
+        # [IR_DELEGATED] Auto-generated wrapper (functional decomposition)
+        from intellirefactor.unified.knowledge import get_contraindications as __ir_unified_get_contraindications
+        return __ir_unified_get_contraindications(self)
 
     def _generate_transformation_examples(self) -> Dict[str, str]:
         """Generate code transformation examples."""

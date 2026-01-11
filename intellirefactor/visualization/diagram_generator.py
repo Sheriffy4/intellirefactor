@@ -193,7 +193,7 @@ class SmartFlowVisitor(ast.NodeVisitor):
             elif isinstance(node, ast.Call):
                 return f"{self._format_expr(node.func)}()"
             return ast.unparse(node)
-        except:
+        except Exception:
             return "expr"
 
 

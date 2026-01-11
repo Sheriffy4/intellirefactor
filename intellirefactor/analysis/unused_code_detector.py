@@ -9,19 +9,24 @@ This module implements three-level unused code detection:
 All findings include comprehensive evidence and confidence scores.
 """
 
+from __future__ import annotations
+
 import ast
 import sqlite3
 import logging
 from pathlib import Path
-from typing import Dict, List, Set, Optional, Any, Union
+from typing import Dict, List, Set, Optional, Any, Union, TYPE_CHECKING
 from dataclasses import dataclass, field
 from enum import Enum
 import re
 from collections import defaultdict
 
 from .models import FileReference, Evidence
-from .file_analyzer import FileAnalyzer
+
 from .lazy_loader import LazyProjectContext
+
+if TYPE_CHECKING:
+    from .index_store import IndexStore
 
 
 class UnusedCodeType(Enum):
@@ -160,7 +165,7 @@ class UnusedCodeDetector:
         """Initialize the unused code detector."""
         self.project_path = Path(project_path)
         self.library_mode = library_mode
-        self.file_analyzer = FileAnalyzer()
+
         self.logger = logging.getLogger(__name__)
 
         # Analysis state
@@ -864,9 +869,9 @@ class UnusedCodeDetector:
 
     def _get_timestamp(self) -> str:
         """Get current timestamp."""
-        from datetime import datetime
-
-        return datetime.now().isoformat()
+        # [IR_DELEGATED] Auto-generated wrapper (functional decomposition)
+        from intellirefactor.unified.analysis import get_timestamp as __ir_unified_get_timestamp
+        return __ir_unified_get_timestamp(self)
 
     def _is_module_used_in_external_index(
         self, module_name: str, external_index: "IndexStore"
@@ -936,12 +941,26 @@ class UnusedCodeDetector:
 
             # If not found through lazy loading, try direct database queries
             with external_index._get_connection() as conn:
-                # Check if this symbol name appears in usage patterns in other files
-                cursor = conn.execute(
-                    """SELECT COUNT(*) FROM symbols WHERE name = ? AND file_path != ?""",
-                    (symbol_name, file_path),
-                )
-                count = cursor.fetchone()[0]
+                # NOTE: symbols table typically doesn't have file_path; it has file_id.
+                # Try to exclude the current file if it exists in files table.
+                exclude_file_id: Optional[int] = None
+                try:
+                    cur = conn.execute("SELECT file_id FROM files WHERE file_path = ?", (file_path,))
+                    row = cur.fetchone()
+                    if row:
+                        exclude_file_id = int(row[0])
+                except sqlite3.OperationalError:
+                    exclude_file_id = None
+
+                if exclude_file_id is not None:
+                    cursor = conn.execute(
+                        "SELECT COUNT(*) FROM symbols WHERE name = ? AND file_id != ?",
+                        (symbol_name, exclude_file_id),
+                    )
+                else:
+                    cursor = conn.execute("SELECT COUNT(*) FROM symbols WHERE name = ?", (symbol_name,))
+
+                count = int(cursor.fetchone()[0] or 0)
 
                 # If we found matches, the symbol might be used
                 if count > 0:
@@ -956,8 +975,7 @@ class UnusedCodeDetector:
                     count = cursor.fetchone()[0]
                     return count > 0
                 except sqlite3.OperationalError:
-                    # dependencies table might not exist
-                    pass
+                    self.logger.debug("External index fallback dependencies query failed", exc_info=True)
 
                 # Check attribute access table
                 try:
@@ -968,8 +986,7 @@ class UnusedCodeDetector:
                     count = cursor.fetchone()[0]
                     return count > 0
                 except sqlite3.OperationalError:
-                    # attribute_access table might not exist
-                    pass
+                    self.logger.debug("External index fallback attribute_access query failed", exc_info=True)
 
                 return False
         except Exception:

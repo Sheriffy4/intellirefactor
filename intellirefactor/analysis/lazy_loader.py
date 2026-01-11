@@ -125,7 +125,7 @@ class LazyProjectContext:
 
         with open(file_path, "rb") as f:
             content = f.read()
-            return hashlib.md5(content).hexdigest()
+            return hashlib.blake2b(content, digest_size=16).hexdigest()
 
     def get_file_info(self, file_path: str) -> Optional[Dict[str, Any]]:
         """

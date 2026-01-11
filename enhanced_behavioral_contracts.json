@@ -1,0 +1,275 @@
+{
+  "metadata": {
+    "target_file": "core/bypass/engine/attack_dispatcher.py",
+    "analysis_timestamp": "2026-01-09T16:00:00",
+    "enhancement_version": "2.0-working"
+  },
+  "behavioral_contracts": {
+    "1_real_call_sites": {
+      "total_call_sites": 0,
+      "call_sites": [],
+      "task_type_frequencies": {},
+      "params_keys_union": [],
+      "packet_info_keys_union": [],
+      "files_analyzed": 100
+    },
+    "2_key_classification": {
+      "input_keys": [
+        "+",
+        ",",
+        "..",
+        ":",
+        "=",
+        "_combo_attacks",
+        "_use_unified_dispatcher",
+        "attacks",
+        "custom_sni",
+        "disorder",
+        "disorder_method",
+        "domain",
+        "dst_addr",
+        "dst_port",
+        "fake",
+        "fake_host",
+        "fake_sni",
+        "fake_ttl",
+        "flags",
+        "fooling",
+        "fooling_methods",
+        "is_fake",
+        "positions",
+        "split_pos",
+        "src_addr",
+        "src_port",
+        "strategy_id",
+        "strategy_name",
+        "tcp_ack",
+        "tcp_seq",
+        "ttl"
+      ],
+      "derived_keys": [
+        "resolved_custom_sni"
+      ],
+      "mixed_keys": [],
+      "classification_method": "heuristic_based_on_key_names_and_usage"
+    },
+    "3_attack_recipe_contract": {
+      "total_consumers": 10,
+      "options_keys_discovered": [
+        "performance_score",
+        "result",
+        "seq",
+        "timestamp"
+      ],
+      "key_frequencies": {
+        "performance_score": 4,
+        "timestamp": 3,
+        "seq": 2,
+        "result": 1
+      },
+      "usage_patterns": {
+        "segment_options": 10,
+        "options_direct": 0,
+        "options_get": 0
+      },
+      "sample_consumers": [
+        {
+          "file": "core\\diagnostic_system.py",
+          "line": 1742,
+          "pattern": "segment_options",
+          "key": "performance_score",
+          "context": "x[1]['performance_score']"
+        },
+        {
+          "file": "core\\diagnostic_system.py",
+          "line": 1746,
+          "pattern": "segment_options",
+          "key": "performance_score",
+          "context": "x[1]['performance_score']"
+        },
+        {
+          "file": "core\\diagnostic_system.py",
+          "line": 1751,
+          "pattern": "segment_options",
+          "key": "performance_score",
+          "context": "worst_techniques[0][1]['performance_score']"
+        },
+        {
+          "file": "core\\diagnostic_system.py",
+          "line": 1752,
+          "pattern": "segment_options",
+          "key": "performance_score",
+          "context": "t[1]['performance_score']"
+        },
+        {
+          "file": "core\\diagnostic_system.py",
+          "line": 2420,
+          "pattern": "segment_options",
+          "key": "result",
+          "context": "failures[0]['result']"
+        },
+        {
+          "file": "core\\simple_packet_validator.py",
+          "line": 164,
+          "pattern": "segment_options",
+          "key": "seq",
+          "context": "fake_packets[0]['seq']"
+        },
+        {
+          "file": "core\\simple_packet_validator.py",
+          "line": 166,
+          "pattern": "segment_options",
+          "key": "seq",
+          "context": "real_packets_sorted[0]['seq']"
+        },
+        {
+          "file": "core\\strategy_monitor.py",
+          "line": 990,
+          "pattern": "segment_options",
+          "key": "timestamp",
+          "context": "history[0]['timestamp']"
+        },
+        {
+          "file": "core\\strategy_monitor.py",
+          "line": 995,
+          "pattern": "segment_options",
+          "key": "timestamp",
+          "context": "history[0]['timestamp']"
+        },
+        {
+          "file": "core\\strategy_monitor.py",
+          "line": 1000,
+          "pattern": "segment_options",
+          "key": "timestamp",
+          "context": "history[0]['timestamp']"
+        }
+      ]
+    },
+    "7_external_surface": {
+      "symbol_statistics": {
+        "AttackDispatcher": {
+          "total_usages": 0,
+          "files_count": 0,
+          "usage_types": [],
+          "sample_files": []
+        },
+        "DispatcherConfig": {
+          "total_usages": 0,
+          "files_count": 0,
+          "usage_types": [],
+          "sample_files": []
+        },
+        "AttackExecutionError": {
+          "total_usages": 0,
+          "files_count": 0,
+          "usage_types": [],
+          "sample_files": []
+        },
+        "AttackNotFoundError": {
+          "total_usages": 0,
+          "files_count": 0,
+          "usage_types": [],
+          "sample_files": []
+        },
+        "ParameterValidationError": {
+          "total_usages": 0,
+          "files_count": 0,
+          "usage_types": [],
+          "sample_files": []
+        },
+        "TLSConstants": {
+          "total_usages": 0,
+          "files_count": 0,
+          "usage_types": [],
+          "sample_files": []
+        },
+        "DisorderMethod": {
+          "total_usages": 0,
+          "files_count": 0,
+          "usage_types": [],
+          "sample_files": []
+        },
+        "DispatcherError": {
+          "total_usages": 0,
+          "files_count": 0,
+          "usage_types": [],
+          "sample_files": []
+        },
+        "create_attack_dispatcher": {
+          "total_usages": 0,
+          "files_count": 0,
+          "usage_types": [],
+          "sample_files": []
+        }
+      },
+      "total_usages": 1,
+      "files_analyzed": 100
+    },
+    "5_environment_modes": {
+      "known_feature_flags": {
+        "ADVANCED_ATTACKS_AVAILABLE": {
+          "description": "Advanced attack implementations available",
+          "fallback_behavior": "Use basic attack implementations",
+          "test_scenarios": [
+            "advanced=True",
+            "advanced=False"
+          ]
+        },
+        "OPERATION_LOGGER_AVAILABLE": {
+          "description": "Operation logging available",
+          "fallback_behavior": "Skip detailed logging",
+          "test_scenarios": [
+            "logging=True",
+            "logging=False"
+          ]
+        }
+      },
+      "test_matrix_recommendations": [
+        "Test each feature flag combination",
+        "Verify fallback behavior when dependencies unavailable",
+        "Test error handling in each mode",
+        "Validate performance in different modes"
+      ]
+    },
+    "6_fixture_recommendations": {
+      "priority_fixtures": [
+        {
+          "name": "tls_clienthello_with_sni",
+          "description": "TLS ClientHello with SNI extension",
+          "payload_size": "200-400 bytes",
+          "key_features": [
+            "SNI present",
+            "Valid TLS structure"
+          ]
+        },
+        {
+          "name": "http_get_standard",
+          "description": "Standard HTTP GET request",
+          "payload_size": "100-300 bytes",
+          "key_features": [
+            "Host header",
+            "Standard headers"
+          ]
+        }
+      ],
+      "golden_expectations": [],
+      "test_priorities": []
+    }
+  },
+  "refactoring_readiness": {
+    "score": 8.0,
+    "max_score": 10.0,
+    "level": "ADEQUATE",
+    "improvements_achieved": [
+      "Real call-sites discovered: 0",
+      "AttackRecipe consumers found: 10",
+      "External usage patterns: 1",
+      "Options keys discovered: 4"
+    ]
+  },
+  "original_analysis_summary": {
+    "quality_score": null,
+    "risk_assessment": null,
+    "recommendations_count": 0
+  }
+}

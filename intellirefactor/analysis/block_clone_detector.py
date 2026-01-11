@@ -301,7 +301,7 @@ class BlockCloneDetector:
         )
         channel_str = ",".join(sorted(c.value for c in channels))
         payload = f"{clone_type.value}|{channel_str}|{'|'.join(sorted_keys)}"
-        digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+        digest = hashlib.blake2b(payload.encode("utf-8"), digest_size=8).hexdigest()
         return f"{clone_type.value}_{digest}"
 
     def _create_clone_group(

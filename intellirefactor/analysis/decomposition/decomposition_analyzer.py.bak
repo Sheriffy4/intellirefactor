@@ -1,0 +1,1419 @@
+"""
+Main Decomposition Analyzer
+
+Orchestrates the complete functional decomposition pipeline and provides
+a simple interface for integration with GUI and CLI tools.
+
+This version implements:
+- apply_safe / apply_assisted
+- safe exact-check logging (SAFE_EXACT_OK/FAIL + reason) for every plan
+- robust wrapper patching (lineno mismatch safe)
+- safe decorator handling (@staticmethod/@classmethod/@property/@cached_property)
+- apply_assisted UPDATE_IMPORTS (from-import only), skipping cases with comments
+- moved_impl (copy body to unified) only for top-level functions
+"""
+
+from __future__ import annotations
+
+import ast
+import copy
+import difflib
+import io
+import json
+import logging
+import py_compile
+import re
+import shutil
+import sys
+import textwrap
+import tokenize
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+
+from .models import (
+    ApplicationMode,
+    CanonicalizationPlan,
+    DecompositionConfig,
+    ProjectFunctionalMap,
+    SimilarityCluster,
+    RecommendationType,
+    PatchStepKind,
+    FunctionalBlock,
+    RiskLevel,
+    EffortClass,
+)
+from .functional_map import FunctionalMapBuilder
+from .consolidation_planner import ConsolidationPlanner
+from .report_generator import DecompositionReportGenerator
+
+logger = logging.getLogger(__name__)
+
+
+class DecompositionAnalyzer:
+    """
+    Main analyzer for functional decomposition and consolidation.
+    """
+
+    _WRAPPER_MARKER = "[IR_DELEGATED] Auto-generated wrapper (functional decomposition)"
+
+    _SAFE_DECORATORS_ALLOWLIST = {
+        "staticmethod",
+        "classmethod",
+        "property",
+        "cached_property",
+        "functools.cached_property",
+    }
+
+    def __init__(self, config: Optional[DecompositionConfig] = None):
+        self.config = config or DecompositionConfig.default()
+        self.logger = logger
+
+        self.map_builder = FunctionalMapBuilder(self.config)
+
+        try:
+            self.planner = ConsolidationPlanner(self.config)  # type: ignore[arg-type]
+        except TypeError:
+            self.planner = ConsolidationPlanner()
+
+        try:
+            self.report_generator = DecompositionReportGenerator(self.config)  # type: ignore[arg-type]
+        except TypeError:
+            self.report_generator = DecompositionReportGenerator()
+
+        self._functional_map: Optional[ProjectFunctionalMap] = None
+        self._clusters: List[SimilarityCluster] = []
+        self._plans: List[CanonicalizationPlan] = []
+
+        # Caches for speed
+        self._file_text_cache: Dict[Path, str] = {}
+        self._file_ast_cache: Dict[Path, ast.Module] = {}
+
+    # ---------------------------------------------------------------------
+    # Public API
+    # ---------------------------------------------------------------------
+
+    def analyze_project(
+        self,
+        project_root: str,
+        output_dir: Optional[str] = None,
+        mode: ApplicationMode = ApplicationMode.ANALYZE_ONLY,
+    ) -> Dict[str, Any]:
+        start_time = datetime.now()
+        self.logger.info("Starting functional decomposition analysis of %s", project_root)
+
+        try:
+            # Step 1: Build functional map
+            self.logger.info("Building functional map...")
+            self._functional_map = self.map_builder.build_functional_map(project_root)
+
+            if hasattr(self._functional_map, "recompute_stats"):
+                self._functional_map.recompute_stats()  # type: ignore[attr-defined]
+
+            # Step 2: Extract clusters
+            self.logger.info("Extracting similarity clusters...")
+            self._clusters = list(self._functional_map.clusters.values())
+
+            # Step 3: Generate plans
+            if mode != ApplicationMode.ANALYZE_ONLY or output_dir:
+                self.logger.info("Generating consolidation plans...")
+                plan_mode = mode if mode != ApplicationMode.ANALYZE_ONLY else ApplicationMode.PLAN_ONLY
+                self._plans = self.planner.create_consolidation_plans(
+                    self._clusters, self._functional_map, plan_mode
+                )
+            else:
+                self._plans = []
+
+            # Step 4: Reports
+            report_files: Dict[str, str] = {}
+            if output_dir:
+                self.logger.info("Generating reports...")
+                report_files = self.report_generator.generate_all_reports(
+                    self._functional_map, self._clusters, self._plans, output_dir
+                )
+
+            # Step 5: Apply
+            applied_changes: List[Dict[str, Any]] = []
+            evaluations: List[Dict[str, Any]] = []
+
+            if mode in (ApplicationMode.APPLY_SAFE, ApplicationMode.APPLY_ASSISTED):
+                if not output_dir:
+                    self.logger.warning("apply_* mode requires output_dir; skipping apply.")
+                else:
+                    applied_changes, evaluations = self._apply_consolidation(
+                        plans=self._plans,
+                        functional_map=self._functional_map,
+                        clusters=self._clusters,
+                        project_root=project_root,
+                        output_dir=output_dir,
+                        mode=mode,
+                    )
+
+            duration = (datetime.now() - start_time).total_seconds()
+
+            return {
+                "success": True,
+                "duration_seconds": duration,
+                "functional_map": self._functional_map,
+                "clusters": self._clusters,
+                "plans": self._plans,
+                "report_files": report_files,
+                "statistics": self._generate_statistics(),
+                "recommendations": self._generate_recommendations(),
+                "applied_changes": applied_changes,
+                "plan_evaluations": evaluations,
+            }
+
+        except Exception as e:
+            self.logger.error("Analysis failed: %s", e, exc_info=True)
+            return {
+                "success": False,
+                "error": str(e),
+                "duration_seconds": (datetime.now() - start_time).total_seconds(),
+            }
+
+    def get_functional_map(self) -> Optional[ProjectFunctionalMap]:
+        return self._functional_map
+
+    def get_clusters(self) -> List[SimilarityCluster]:
+        return self._clusters
+
+    def get_plans(self) -> List[CanonicalizationPlan]:
+        return self._plans
+
+    def get_cluster_details(self, cluster_id: str) -> Optional[Dict[str, Any]]:
+        cluster = next((c for c in self._clusters if c.id == cluster_id), None)
+        if not cluster or not self._functional_map:
+            return None
+
+        cluster_blocks = [self._functional_map.blocks[bid] for bid in cluster.blocks if bid in self._functional_map.blocks]
+        plan = next((p for p in self._plans if p.cluster_id == cluster_id), None)
+
+        return {
+            "cluster": cluster,
+            "blocks": cluster_blocks,
+            "plan": plan,
+            "block_count": len(cluster_blocks),
+            "total_loc": sum(b.loc for b in cluster_blocks),
+            "avg_complexity": (sum(b.cyclomatic for b in cluster_blocks) / len(cluster_blocks)) if cluster_blocks else 0.0,
+            "files_involved": sorted({b.file_path for b in cluster_blocks}),
+        }
+
+    def get_top_opportunities(self, limit: int = 10) -> List[Dict[str, Any]]:
+        if not self._functional_map:
+            return []
+
+        opportunities: List[Dict[str, Any]] = []
+        for cluster in self._clusters:
+            benefit_score = self._calculate_cluster_benefit(cluster)
+            details = self.get_cluster_details(cluster.id)
+            if not details:
+                continue
+
+            opportunities.append(
+                {
+                    "cluster_id": cluster.id,
+                    "category": f"{cluster.category}:{cluster.subcategory}",
+                    "recommendation": cluster.recommendation.value,
+                    "benefit_score": benefit_score,
+                    "block_count": details["block_count"],
+                    "total_loc": details["total_loc"],
+                    "avg_similarity": cluster.avg_similarity,
+                    "risk_level": cluster.risk_level.value,
+                    "effort_class": cluster.effort_class.value,
+                }
+            )
+
+        opportunities.sort(key=lambda x: x["benefit_score"], reverse=True)
+        return opportunities[:limit]
+	
+	# ---------------------------------------------------------------------
+    # APPLY ENGINE
+    # ---------------------------------------------------------------------
+
+    def _apply_consolidation(
+        self,
+        *,
+        plans: List[CanonicalizationPlan],
+        functional_map: ProjectFunctionalMap,
+        clusters: List[SimilarityCluster],
+        project_root: str,
+        output_dir: str,
+        mode: ApplicationMode,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        out_dir = Path(output_dir).resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        project_root_path = Path(project_root).resolve()
+        package_root, package_name = self._detect_package_root(project_root_path)
+        self.logger.info("Detected package_root=%s package_name=%s", package_root, package_name)
+
+        clusters_by_id = {c.id: c for c in clusters}
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_root = out_dir / "_backups" / ts
+        patch_root = out_dir / "patches" / ts
+        backup_root.mkdir(parents=True, exist_ok=True)
+        patch_root.mkdir(parents=True, exist_ok=True)
+
+        evaluations: List[Dict[str, Any]] = []
+        applied: List[Dict[str, Any]] = []
+
+        # Pre-filter: in apply_safe only consider low-risk XS/S to avoid scanning too much
+        if mode == ApplicationMode.APPLY_SAFE:
+            candidates = [
+                p for p in plans
+                if p.risk_assessment == RiskLevel.LOW and p.estimated_effort in (EffortClass.XS, EffortClass.S)
+            ]
+        else:
+            candidates = list(plans)
+
+        for plan in candidates:
+            cluster = clusters_by_id.get(plan.cluster_id)
+
+            # Evaluate SAFE_EXACT for logging
+            safe_exact_status, safe_exact_reason = self._evaluate_safe_exact(plan, cluster, functional_map, package_root)
+
+            eval_row = {
+                "cluster_id": plan.cluster_id,
+                "target_module": plan.target_module,
+                "target_symbol": plan.target_symbol,
+                "risk": getattr(plan.risk_assessment, "value", str(plan.risk_assessment)),
+                "effort": getattr(plan.estimated_effort, "value", str(plan.estimated_effort)),
+                "recommendation": getattr(cluster.recommendation, "value", "unknown") if cluster else "unknown",
+                "similarity": float(getattr(cluster, "avg_similarity", 0.0)) if cluster else 0.0,
+                "safe_exact": safe_exact_status,          # SAFE_EXACT_OK / SAFE_EXACT_FAIL
+                "safe_exact_reason": safe_exact_reason,
+            }
+            evaluations.append(eval_row)
+
+            # Decide apply
+            if mode == ApplicationMode.APPLY_SAFE:
+                if safe_exact_status != "SAFE_EXACT_OK":
+                    continue
+                if not cluster or cluster.recommendation == RecommendationType.KEEP_SEPARATE:
+                    continue
+
+            if mode == ApplicationMode.APPLY_ASSISTED:
+                # if not safe exact -> require interactive confirmation; if no tty -> skip
+                if safe_exact_status != "SAFE_EXACT_OK":
+                    if not sys.stdin.isatty():
+                        continue
+                    if input(
+                        f"Plan {plan.cluster_id} is not SAFE_EXACT ({safe_exact_reason}). Apply anyway? [y/N]: "
+                    ).strip().lower() != "y":
+                        continue
+
+            plan_record: Dict[str, Any] = {
+                "cluster_id": plan.cluster_id,
+                "target_module": plan.target_module,
+                "target_symbol": plan.target_symbol,
+                "mode": mode.value,
+                "status": "PENDING",
+                "canonical_block_id": "",
+                "strategy": "",
+                "safe_exact": safe_exact_status,
+                "safe_exact_reason": safe_exact_reason,
+                "files_modified": [],
+                "files_created": [],
+                "backups": [],
+                "patches": [],
+                "skipped_steps": [],
+                "warnings": [],
+                "errors": [],
+            }
+
+            created_files: List[Path] = []
+            modified_files: List[Path] = []
+            backups: List[Tuple[Path, Path]] = []  # (orig, bkp)
+
+            try:
+                if not cluster:
+                    plan_record["status"] = "SKIPPED"
+                    plan_record["warnings"].append("cluster not found")
+                    applied.append(plan_record)
+                    continue
+
+                canonical_id = self._choose_canonical_block_id(plan, cluster, functional_map, package_root)
+                plan_record["canonical_block_id"] = canonical_id or ""
+                canonical_block = functional_map.blocks.get(canonical_id) if canonical_id else None
+                if not canonical_block:
+                    plan_record["status"] = "SKIPPED"
+                    plan_record["warnings"].append("canonical block not resolved")
+                    applied.append(plan_record)
+                    continue
+
+                # Strategy: moved_impl only for top-level and only when safe_exact ok
+                moved_impl_ok = False
+                if (mode == ApplicationMode.APPLY_SAFE and safe_exact_status == "SAFE_EXACT_OK") or mode == ApplicationMode.APPLY_ASSISTED:
+                    moved_impl_ok = self._should_try_moved_impl(canonical_block, cluster, safe_exact_status)
+
+                # Execute steps
+                for step in plan.steps:
+                    if mode == ApplicationMode.APPLY_SAFE and step.kind not in (
+                        PatchStepKind.ADD_NEW_MODULE,
+                        PatchStepKind.ADD_WRAPPER,
+                    ):
+                        plan_record["skipped_steps"].append(
+                            {"step_id": step.id, "kind": step.kind.value, "reason": "apply_safe skips this kind"}
+                        )
+                        continue
+
+                    if step.kind == PatchStepKind.ADD_NEW_MODULE:
+                        target_module = step.target_module or plan.target_module
+                        target_symbol = step.target_symbol or plan.target_symbol
+                        target_file = self._resolve_target_module_path(package_root=package_root, target_module=target_module)
+
+                        self._ensure_package_files(target_file, package_root=package_root)
+
+                        old_unified = self._read_text(target_file)
+
+                        # moved_impl attempt (top-level only)
+                        if moved_impl_ok:
+                            new_unified, ok, warnings = self._ensure_unified_symbol_moved_impl_top_level(
+                                target_file=target_file,
+                                target_symbol=target_symbol,
+                                canonical_block=canonical_block,
+                                package_root=package_root,
+                                package_name=package_name,
+                            )
+                            plan_record["warnings"].extend([f"move_impl: {w}" for w in warnings])
+                            moved_impl_ok = ok
+                            if ok and new_unified != old_unified:
+                                if target_file.exists():
+                                    bkp = self._backup_file(target_file, backup_root, package_root)
+                                    backups.append((target_file, bkp))
+                                    plan_record["backups"].append(str(bkp))
+
+                                self._write_text(target_file, new_unified)
+                                if not old_unified:
+                                    created_files.append(target_file)
+                                    plan_record["files_created"].append(str(target_file))
+                                else:
+                                    modified_files.append(target_file)
+                                    plan_record["files_modified"].append(str(target_file))
+
+                                patch_path = patch_root / f"{plan.cluster_id}_{step.id}_ADD_NEW_MODULE.patch"
+                                self._write_patch(patch_path, old_unified, new_unified, str(target_file))
+                                plan_record["patches"].append(str(patch_path))
+
+                        # fallback delegation
+                        if not moved_impl_ok:
+                            new_unified = self._ensure_unified_symbol_delegating(
+                                target_file=target_file,
+                                target_symbol=target_symbol,
+                                canonical_block=canonical_block,
+                                package_root=package_root,
+                                package_name=package_name,
+                            )
+                            if new_unified != old_unified:
+                                if target_file.exists():
+                                    bkp = self._backup_file(target_file, backup_root, package_root)
+                                    backups.append((target_file, bkp))
+                                    plan_record["backups"].append(str(bkp))
+
+                                self._write_text(target_file, new_unified)
+                                if not old_unified:
+                                    created_files.append(target_file)
+                                    plan_record["files_created"].append(str(target_file))
+                                else:
+                                    modified_files.append(target_file)
+                                    plan_record["files_modified"].append(str(target_file))
+
+                                patch_path = patch_root / f"{plan.cluster_id}_{step.id}_ADD_NEW_MODULE.patch"
+                                self._write_patch(patch_path, old_unified, new_unified, str(target_file))
+                                plan_record["patches"].append(str(patch_path))
+
+                    elif step.kind == PatchStepKind.ADD_WRAPPER:
+                        if not step.source_blocks:
+                            plan_record["warnings"].append(f"{step.id}: no source_blocks")
+                            continue
+
+                        block_id = step.source_blocks[0]
+                        block = functional_map.blocks.get(block_id)
+                        if not block:
+                            plan_record["warnings"].append(f"{step.id}: missing block {block_id}")
+                            continue
+
+                        # Avoid recursion in delegate strategy: skip canonical wrapper
+                        if (not moved_impl_ok) and canonical_id and block_id == canonical_id:
+                            plan_record["skipped_steps"].append(
+                                {"step_id": step.id, "kind": step.kind.value, "reason": "canonical skipped (delegate recursion)"}
+                            )
+                            continue
+
+                        src_file = self._resolve_block_file_path(block, package_root)
+                        if not src_file.exists():
+                            plan_record["warnings"].append(f"{step.id}: file not found: {src_file}")
+                            continue
+
+                        old_src = self._read_text(src_file, bom=True)
+
+                        # Idempotency
+                        if self._WRAPPER_MARKER in old_src:
+                            plan_record["skipped_steps"].append(
+                                {"step_id": step.id, "kind": step.kind.value, "reason": "already wrapped (marker present)"}
+                            )
+                            continue
+
+                        new_src = self._apply_wrapper_patch(
+                            source_code=old_src,
+                            block=block,
+                            unified_module=step.target_module or plan.target_module,
+                            unified_symbol=step.target_symbol or plan.target_symbol,
+                            package_name=package_name,
+                        )
+
+                        if new_src != old_src:
+                            bkp = self._backup_file(src_file, backup_root, package_root)
+                            backups.append((src_file, bkp))
+                            plan_record["backups"].append(str(bkp))
+
+                            self._write_text(src_file, new_src)
+                            modified_files.append(src_file)
+                            plan_record["files_modified"].append(str(src_file))
+
+                            patch_path = patch_root / f"{plan.cluster_id}_{step.id}_ADD_WRAPPER.patch"
+                            self._write_patch(patch_path, old_src, new_src, str(src_file))
+                            plan_record["patches"].append(str(patch_path))
+                        else:
+                            plan_record["warnings"].append(f"{step.id}: wrapper patch made no changes ({block.qualname})")
+
+                    elif step.kind == PatchStepKind.UPDATE_IMPORTS:
+                        if mode != ApplicationMode.APPLY_ASSISTED:
+                            plan_record["skipped_steps"].append(
+                                {"step_id": step.id, "kind": step.kind.value, "reason": "UPDATE_IMPORTS only in apply_assisted"}
+                            )
+                            continue
+
+                        changed_files, warns = self._apply_update_imports_assisted(
+                            step=step,
+                            plan=plan,
+                            functional_map=functional_map,
+                            package_root=package_root,
+                            package_name=package_name,
+                            backup_root=backup_root,
+                            patch_root=patch_root,
+                            backups=backups,
+                        )
+                        plan_record["warnings"].extend(warns)
+                        for f in changed_files:
+                            plan_record["files_modified"].append(str(f))
+
+                    else:
+                        plan_record["skipped_steps"].append(
+                            {"step_id": step.id, "kind": step.kind.value, "reason": "not auto-implemented"}
+                        )
+
+                plan_record["strategy"] = "moved_impl" if moved_impl_ok else "delegate"
+
+                # Validate touched
+                touched = sorted({*created_files, *modified_files}, key=lambda p: str(p))
+                self._validate_files(touched)
+
+                plan_record["status"] = "APPLIED"
+                applied.append(plan_record)
+
+            except Exception as e:
+                plan_record["status"] = "FAILED"
+                plan_record["errors"].append(str(e))
+                self.logger.error("Apply failed for cluster %s: %s", plan.cluster_id, e, exc_info=True)
+                self._rollback(backups=backups, created_files=created_files)
+                applied.append(plan_record)
+
+        manifest = {
+            "timestamp": ts,
+            "mode": mode.value,
+            "package_root": str(package_root),
+            "package_name": package_name,
+            "evaluations": evaluations,   # <-- SAFE_EXACT_OK/FAIL for each evaluated plan
+            "applied": applied,
+        }
+        (out_dir / f"apply_manifest_{ts}.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        return applied, evaluations
+
+    # ---------------------------------------------------------------------
+    # SAFE_EXACT evaluation
+    # ---------------------------------------------------------------------
+
+    def _choose_canonical_block_id(
+        self,
+        plan: CanonicalizationPlan,
+        cluster: SimilarityCluster,
+        fm: ProjectFunctionalMap,
+        package_root: Path,
+    ) -> Optional[str]:
+        # Prefer explicit candidate
+        if getattr(cluster, "canonical_candidate", "") and cluster.canonical_candidate in fm.blocks:
+            return cluster.canonical_candidate
+
+        # Consider all blocks; prefer one that is NOT already wrapped
+        block_ids = list(cluster.blocks)
+        blocks = [fm.blocks.get(bid) for bid in block_ids]
+        blocks = [b for b in blocks if b is not None]
+
+        def is_wrapped(b: FunctionalBlock) -> bool:
+            try:
+                p = self._resolve_block_file_path(b, package_root)
+                src = self._read_text(p, bom=True)
+                seg = self._slice_lines(src, b.lineno, b.end_lineno)
+                return self._WRAPPER_MARKER in seg
+            except Exception:
+                return False
+
+        unwrapped = [b for b in blocks if not is_wrapped(b)]
+        cand_list = unwrapped or blocks
+        if not cand_list:
+            return None
+
+        best = max(
+            cand_list,
+            key=lambda b: (
+                len(getattr(b, "called_by", []) or []),
+                -int(getattr(b, "cyclomatic", 0) or 0),
+                -int(getattr(b, "loc", 0) or 0),
+            ),
+        )
+        return best.id
+	
+    def _evaluate_safe_exact(
+        self,
+        plan: CanonicalizationPlan,
+        cluster: Optional[SimilarityCluster],
+        fm: ProjectFunctionalMap,
+        package_root: Path,
+    ) -> Tuple[str, str]:
+        if not cluster:
+            return "SAFE_EXACT_FAIL", "cluster not found"
+
+        block_ids = list(cluster.blocks or [])
+        if len(block_ids) < 2:
+            return "SAFE_EXACT_FAIL", "cluster has <2 blocks"
+
+        fps: Set[str] = set()
+        for bid in block_ids:
+            b = fm.blocks.get(bid)
+            if not b:
+                return "SAFE_EXACT_FAIL", f"missing block id {bid}"
+            fp = self._normalized_callable_fingerprint(b, package_root)
+            if not fp:
+                return "SAFE_EXACT_FAIL", f"cannot fingerprint {b.qualname}"
+            fps.add(fp)
+
+        if len(fps) == 1:
+            return "SAFE_EXACT_OK", "normalized body fingerprints match"
+        return "SAFE_EXACT_FAIL", f"normalized body fingerprints differ ({len(fps)} variants)"
+
+    def _normalized_callable_fingerprint(self, block: FunctionalBlock, package_root: Path) -> str:
+        """
+        Normalized callable fingerprint:
+        - find actual def node (lineno-tolerant)
+        - ignore name
+        - ignore docstring
+        - ignore annotations/returns
+        - drop decorators but keep decorator kind in prefix
+        """
+        file_path = self._resolve_block_file_path(block, package_root)
+        if not file_path.exists():
+            return ""
+
+        try:
+            tree = self._parse_file(file_path)
+            node = self._find_def_node(tree, block.qualname, lineno=block.lineno)
+        except Exception:
+            return ""
+
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return ""
+
+        dec_kind = self._decorator_kind(node)
+        kind_prefix = f"{'method' if block.is_method else 'function'}|{dec_kind}|{'async' if isinstance(node, ast.AsyncFunctionDef) else 'sync'}"
+
+        node2 = copy.deepcopy(node)
+        node2.name = "__X__"
+        node2.decorator_list = []
+
+        # drop docstring
+        if (
+            node2.body
+            and isinstance(node2.body[0], ast.Expr)
+            and isinstance(getattr(node2.body[0], "value", None), ast.Constant)
+            and isinstance(node2.body[0].value.value, str)
+        ):
+            node2.body = node2.body[1:]
+
+        # drop annotations
+        for a in getattr(node2.args, "posonlyargs", []):
+            a.annotation = None
+        for a in node2.args.args:
+            a.annotation = None
+        for a in node2.args.kwonlyargs:
+            a.annotation = None
+        if node2.args.vararg:
+            node2.args.vararg.annotation = None
+        if node2.args.kwarg:
+            node2.args.kwarg.annotation = None
+        node2.returns = None
+
+        dumped = ast.dump(node2, include_attributes=False)
+        return kind_prefix + "|" + dumped
+
+    def _should_try_moved_impl(self, canonical: FunctionalBlock, cluster: SimilarityCluster, safe_exact_status: str) -> bool:
+        if canonical.is_method:
+            return False
+        if safe_exact_status != "SAFE_EXACT_OK":
+            return False
+        # require very high similarity (defensive)
+        min_sim = float(getattr(self.config, "apply_safe_move_min_similarity", 0.995))
+        return float(getattr(cluster, "avg_similarity", 0.0)) >= min_sim
+
+    # ---------------------------------------------------------------------
+    # Unified: moved_impl for top-level only (conservative)
+    # ---------------------------------------------------------------------
+
+    def _ensure_unified_symbol_moved_impl_top_level(
+        self,
+        *,
+        target_file: Path,
+        target_symbol: str,
+        canonical_block: FunctionalBlock,
+        package_root: Path,
+        package_name: str,
+    ) -> Tuple[str, bool, List[str]]:
+        warnings: List[str] = []
+        existing = self._read_text(target_file)
+
+        if re.search(rf"^\s*(async\s+def|def)\s+{re.escape(target_symbol)}\s*\(", existing, flags=re.M):
+            return existing, True, ["symbol already exists"]
+
+        if canonical_block.is_method:
+            return existing, False, ["moved_impl only for top-level functions"]
+
+        src_file = self._resolve_block_file_path(canonical_block, package_root)
+        src_text = self._read_text(src_file, bom=True)
+
+        try:
+            mod_tree = ast.parse(src_text, filename=str(src_file))
+            fn_node = self._find_def_node(mod_tree, canonical_block.qualname, lineno=canonical_block.lineno)
+        except Exception as e:
+            return existing, False, [f"cannot locate canonical def: {e}"]
+
+        if not isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return existing, False, ["canonical node is not a function def"]
+
+        if fn_node.decorator_list:
+            return existing, False, ["decorators present on canonical callable"]
+
+        snippet = self._slice_lines(src_text, canonical_block.lineno, canonical_block.end_lineno)
+        snippet = textwrap.dedent(snippet)
+
+        try:
+            sn_tree = ast.parse(snippet)
+        except SyntaxError as e:
+            return existing, False, [f"snippet parse failed: {e}"]
+
+        sn_fn = next((n for n in sn_tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
+        if not sn_fn:
+            return existing, False, ["no def in snippet"]
+
+        # rename to unified symbol
+        sn_fn.name = target_symbol
+        sn_fn.decorator_list = []
+        ast.fix_missing_locations(sn_fn)
+
+        # ultra conservative: refuse if any suspicious wrapper markers already in body
+        fn_src = ast.unparse(sn_fn)
+        if "__ir_unified_" in fn_src or self._WRAPPER_MARKER in fn_src:
+            return existing, False, ["canonical already looks like wrapper/delegation; skip moved_impl"]
+
+        # conservative free-name check: if any non-builtin Name loads exist, skip moved_impl
+        free = self._free_names(sn_fn)
+        free = {n for n in free if not hasattr(__builtins__, n)}
+        if free:
+            return existing, False, [f"unknown free names in moved_impl: {sorted(free)[:5]}"]
+
+        header = existing
+        if not header.strip():
+            header = (
+                '"""Auto-generated unified implementations.\n'
+                "Generated by functional decomposition analyzer.\n"
+                '"""\n\n'
+                "from __future__ import annotations\n\n"
+            )
+
+        block = "\n".join(
+            [
+                "",
+                f"# --- Auto-generated: {target_symbol} (moved from {canonical_block.qualname}) ---",
+                ast.unparse(sn_fn),
+                "",
+            ]
+        )
+        return header + block, True, warnings
+
+    # ---------------------------------------------------------------------
+    # Unified: delegation (methods+functions, decorator-aware)
+    # ---------------------------------------------------------------------
+
+    def _ensure_unified_symbol_delegating(
+        self,
+        *,
+        target_file: Path,
+        target_symbol: str,
+        canonical_block: FunctionalBlock,
+        package_root: Path,
+        package_name: str,
+    ) -> str:
+        existing = self._read_text(target_file)
+        if re.search(rf"^\s*(async\s+def|def)\s+{re.escape(target_symbol)}\s*\(", existing, flags=re.M):
+            return existing
+
+        src_file = self._resolve_block_file_path(canonical_block, package_root)
+        orig_mod = self._qualify_module(canonical_block.module, package_name) or self._module_dotted_from_filepath(src_file, package_root, package_name)
+        is_async = self._detect_async_def(src_file, canonical_block.qualname, canonical_block.lineno)
+
+        header = existing
+        if not header.strip():
+            header = (
+                '"""Auto-generated unified implementations.\n'
+                "Safe mode delegates to canonical originals.\n"
+                '"""\n\n'
+                "from __future__ import annotations\n\n"
+            )
+
+        lines: List[str] = []
+        lines.append("")
+        lines.append(f"# --- Auto-generated: {target_symbol} (delegate to canonical) ---")
+
+        if canonical_block.is_method:
+            mod_alias = "__ir_canonical_mod"
+            lines.append(f"import {orig_mod} as {mod_alias}")
+
+            class_chain = canonical_block.qualname.split(".")[:-1]
+            meth = canonical_block.method_name
+            cls_expr = mod_alias + "".join(f".{c}" for c in class_chain)
+
+            dec_kind = ""
+            try:
+                tree = self._parse_file(src_file)
+                node = self._find_def_node(tree, canonical_block.qualname, lineno=canonical_block.lineno)
+                dec_kind = self._decorator_kind(node)
+            except Exception:
+                dec_kind = ""
+
+            lines.append("")
+            if is_async:
+                lines.append(f"async def {target_symbol}(*args, **kwargs):")
+                call = self._canonical_method_call_expr(cls_expr, meth, dec_kind)
+                lines.append(f"    return await {call}")
+            else:
+                lines.append(f"def {target_symbol}(*args, **kwargs):")
+                call = self._canonical_method_call_expr(cls_expr, meth, dec_kind)
+                lines.append(f"    return {call}")
+        else:
+            fn = canonical_block.method_name
+            alias = f"__ir_canonical_{fn}"
+            lines.append(f"from {orig_mod} import {fn} as {alias}")
+            lines.append("")
+            if is_async:
+                lines.append(f"async def {target_symbol}(*args, **kwargs):")
+                lines.append(f"    return await {alias}(*args, **kwargs)")
+            else:
+                lines.append(f"def {target_symbol}(*args, **kwargs):")
+                lines.append(f"    return {alias}(*args, **kwargs)")
+
+        lines.append("")
+        return header + "\n".join(lines)
+
+    def _canonical_method_call_expr(self, cls_expr: str, meth: str, dec_kind: str) -> str:
+        if dec_kind == "classmethod":
+            # args[0] is cls; bound to cls already => pass args[1:]
+            return f"getattr((args[0] if args else {cls_expr}), {meth!r})(*args[1:], **kwargs)"
+        if dec_kind == "staticmethod":
+            return f"getattr({cls_expr}, {meth!r})(*args, **kwargs)"
+        if dec_kind in ("property", "cached_property", "functools.cached_property"):
+            return f"(getattr({cls_expr}, {meth!r}).fget)(*args, **kwargs)"
+        # normal instance method: args[0] is self
+        return f"getattr(args[0], {meth!r})(*args[1:], **kwargs)"
+
+    # ---------------------------------------------------------------------
+    # Wrapper patch
+    # ---------------------------------------------------------------------
+
+    def _apply_wrapper_patch(
+        self,
+        *,
+        source_code: str,
+        block: FunctionalBlock,
+        unified_module: str,
+        unified_symbol: str,
+        package_name: str,
+    ) -> str:
+        tree = ast.parse(source_code)
+        node = self._find_def_node(tree, block.qualname, lineno=block.lineno)
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            raise RuntimeError(f"Cannot locate callable node for {block.qualname}")
+
+        dec_names = [self._decorator_name(d) for d in (node.decorator_list or [])]
+        dec_bad = [d for d in dec_names if d and d not in self._SAFE_DECORATORS_ALLOWLIST]
+        if dec_bad:
+            raise RuntimeError(f"Unsupported decorators: {dec_bad}")
+
+        # preserve docstring
+        body_start_lineno: Optional[int] = None
+        if node.body:
+            if (
+                isinstance(node.body[0], ast.Expr)
+                and isinstance(getattr(node.body[0], "value", None), ast.Constant)
+                and isinstance(node.body[0].value.value, str)
+            ):
+                body_start_lineno = getattr(node.body[0], "end_lineno", node.body[0].lineno) + 1
+            else:
+                body_start_lineno = node.body[0].lineno
+
+        end_lineno = getattr(node, "end_lineno", None)
+        if not body_start_lineno or not end_lineno:
+            return source_code
+
+        lines = source_code.splitlines(True)
+        indent = " " * (node.col_offset + 4)
+        mod_dotted = self._module_dotted_from_target_module(unified_module)
+        alias = f"__ir_unified_{unified_symbol}"
+        call_args = self._build_call_arguments(node.args)
+
+        wrapper_lines: List[str] = []
+        wrapper_lines.append(f"{indent}# {self._WRAPPER_MARKER}\n")
+        wrapper_lines.append(f"{indent}from {package_name}.{mod_dotted} import {unified_symbol} as {alias}\n")
+        if isinstance(node, ast.AsyncFunctionDef):
+            wrapper_lines.append(f"{indent}return await {alias}({call_args})\n")
+        else:
+            wrapper_lines.append(f"{indent}return {alias}({call_args})\n")
+
+        new_lines = lines[: body_start_lineno - 1] + wrapper_lines + lines[end_lineno:]
+        return "".join(new_lines)
+
+    def _build_call_arguments(self, args: ast.arguments) -> str:
+        parts: List[str] = []
+        for a in getattr(args, "posonlyargs", []):
+            parts.append(a.arg)
+        for a in args.args:
+            parts.append(a.arg)
+        if args.vararg:
+            parts.append(f"*{args.vararg.arg}")
+        for a in args.kwonlyargs:
+            parts.append(f"{a.arg}={a.arg}")
+        if args.kwarg:
+            parts.append(f"**{args.kwarg.arg}")
+        return ", ".join(parts)
+
+    # ---------------------------------------------------------------------
+    # apply_assisted UPDATE_IMPORTS (from-import), skip comment cases
+    # ---------------------------------------------------------------------
+
+    def _apply_update_imports_assisted(
+        self,
+        *,
+        step: Any,
+        plan: CanonicalizationPlan,
+        functional_map: ProjectFunctionalMap,
+        package_root: Path,
+        package_name: str,
+        backup_root: Path,
+        patch_root: Path,
+        backups: List[Tuple[Path, Path]],
+    ) -> Tuple[List[Path], List[str]]:
+        changed: List[Path] = []
+        warnings: List[str] = []
+
+        unified_mod_dotted = f"{package_name}.{self._module_dotted_from_target_module(plan.target_module)}"
+        unified_symbol = plan.target_symbol
+
+        for bid in (getattr(step, "source_blocks", None) or []):
+            b = functional_map.blocks.get(bid)
+            if not b:
+                continue
+            if b.is_method:
+                warnings.append(f"{step.id}: UPDATE_IMPORTS skip method {b.qualname}")
+                continue
+
+            orig_mod = self._qualify_module(b.module, package_name)
+            orig_name = b.method_name
+
+            for f in self._iter_python_files(package_root):
+                src = self._read_text(f, bom=True)
+                try:
+                    tree = ast.parse(src, filename=str(f))
+                except SyntaxError:
+                    continue
+
+                lines = src.splitlines(True)
+                file_mod = self._file_module_name(f, package_root, package_name)
+                edits: List[Tuple[int, int, str]] = []
+
+                for n in tree.body:
+                    if not isinstance(n, ast.ImportFrom):
+                        continue
+
+                    abs_mod = self._resolve_importfrom_abs_module(n, file_mod)
+                    abs_mod = self._qualify_module(abs_mod, package_name) if abs_mod else abs_mod
+                    if abs_mod != orig_mod:
+                        continue
+
+                    seg = self._slice_lines(src, n.lineno, n.end_lineno or n.lineno)
+                    if self._segment_has_comment(seg):
+                        warnings.append(f"{f.name}:{n.lineno}: skipped import rewrite due to comments")
+                        continue
+
+                    moved: List[ast.alias] = []
+                    remaining: List[ast.alias] = []
+                    for a in n.names:
+                        if a.name == orig_name:
+                            moved.append(a)
+                        else:
+                            remaining.append(a)
+                    if not moved:
+                        continue
+
+                    indent = re.match(r"\s*", lines[n.lineno - 1]).group(0) if lines else ""
+                    repl: List[str] = []
+
+                    if remaining:
+                        repl.append(indent + self._format_importfrom(n.module, remaining, int(n.level or 0)) + "\n")
+
+                    for a in moved:
+                        local = a.asname or a.name
+                        if local != unified_symbol:
+                            repl.append(indent + f"from {unified_mod_dotted} import {unified_symbol} as {local}\n")
+                        else:
+                            repl.append(indent + f"from {unified_mod_dotted} import {unified_symbol}\n")
+
+                    start = n.lineno - 1
+                    end = (n.end_lineno or n.lineno)
+                    edits.append((start, end, "".join(repl)))
+
+                if not edits:
+                    continue
+
+                new_lines = lines[:]
+                for start, end, text in sorted(edits, key=lambda x: x[0], reverse=True):
+                    new_lines[start:end] = [text]
+                new_src = "".join(new_lines)
+
+                if new_src == src:
+                    continue
+
+                bkp = self._backup_file(f, backup_root, package_root)
+                backups.append((f, bkp))
+
+                self._write_text(f, new_src)
+
+                patch_path = patch_root / f"{plan.cluster_id}_{step.id}_UPDATE_IMPORTS_{f.name}.patch"
+                self._write_patch(patch_path, src, new_src, str(f))
+                changed.append(f)
+
+        if not changed:
+            warnings.append(f"{getattr(step, 'id', 'UPDATE_IMPORTS')}: no import sites updated")
+
+        return changed, warnings
+
+    def _segment_has_comment(self, segment: str) -> bool:
+        try:
+            tok = tokenize.generate_tokens(io.StringIO(segment).readline)
+            return any(t.type == tokenize.COMMENT for t in tok)
+        except Exception:
+            # fallback heuristic
+            return "#" in segment
+
+    # ---------------------------------------------------------------------
+    # Paths / packages / backups / patches / validation
+    # ---------------------------------------------------------------------
+
+    def _detect_package_root(self, project_root: Path) -> Tuple[Path, str]:
+        if (project_root / "__init__.py").exists():
+            return project_root, project_root.name
+
+        for root_name in (self.config.project_package_roots or []):
+            cand = project_root / root_name
+            if (cand / "__init__.py").exists():
+                return cand, cand.name
+
+        return project_root, project_root.name
+
+    def _ensure_package_files(self, target_file: Path, *, package_root: Path) -> None:
+        """
+        Ensure directories exist and create __init__.py chain inside package_root.
+        """
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            rel = target_file.resolve().relative_to(package_root.resolve())
+        except Exception:
+            return
+
+        cur = package_root.resolve()
+        for part in rel.parts[:-1]:  # directories only
+            cur = cur / part
+            init_py = cur / "__init__.py"
+            if not init_py.exists():
+                init_py.write_text('"""Auto-generated package."""\n', encoding="utf-8")
+
+    def _resolve_target_module_path(self, *, package_root: Path, target_module: str) -> Path:
+        rel = Path(target_module)
+        if rel.is_absolute():
+            return rel
+        return (package_root / rel).resolve()
+
+    def _resolve_block_file_path(self, block: FunctionalBlock, package_root: Path) -> Path:
+        p = Path(block.file_path)
+        return p if p.is_absolute() else (package_root / p).resolve()
+
+    def _backup_file(self, file_path: Path, backup_root: Path, package_root: Path) -> Path:
+        file_path = file_path.resolve()
+        package_root = package_root.resolve()
+        try:
+            rel = file_path.relative_to(package_root)
+            dest = backup_root / rel
+        except Exception:
+            dest = backup_root / file_path.name
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(file_path, dest)
+        return dest
+
+    def _rollback(self, *, backups: List[Tuple[Path, Path]], created_files: List[Path]) -> None:
+        self.logger.warning("Rollback started: restoring backups and removing created files...")
+        for orig, bkp in reversed(backups):
+            try:
+                if bkp.exists():
+                    orig.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(bkp, orig)
+            except Exception as e:
+                self.logger.error("Rollback restore failed for %s: %s", orig, e)
+
+        for f in reversed(created_files):
+            try:
+                if f.exists():
+                    f.unlink()
+            except Exception as e:
+                self.logger.error("Rollback delete failed for %s: %s", f, e)
+
+    def _write_patch(self, patch_path: Path, old: str, new: str, file_label: str) -> None:
+        patch_path.parent.mkdir(parents=True, exist_ok=True)
+        diff = difflib.unified_diff(
+            old.splitlines(True),
+            new.splitlines(True),
+            fromfile=f"{file_label}.orig",
+            tofile=f"{file_label}.new",
+            lineterm="",
+        )
+        patch_path.write_text("".join(diff), encoding="utf-8")
+
+    def _validate_files(self, files: List[Path]) -> None:
+        for f in files:
+            code = self._read_text(f, bom=True)
+            ast.parse(code, filename=str(f))
+            py_compile.compile(str(f), doraise=True)
+
+    # ---------------------------------------------------------------------
+    # File cache helpers
+    # ---------------------------------------------------------------------
+
+    def _read_text(self, path: Path, bom: bool = False) -> str:
+        path = path.resolve()
+        if path in self._file_text_cache:
+            return self._file_text_cache[path]
+        enc = "utf-8-sig" if bom else "utf-8"
+        text = path.read_text(encoding=enc) if path.exists() else ""
+        self._file_text_cache[path] = text
+        return text
+
+    def _write_text(self, path: Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        self._file_text_cache.pop(path.resolve(), None)
+        self._file_ast_cache.pop(path.resolve(), None)
+
+    def _parse_file(self, path: Path) -> ast.Module:
+        path = path.resolve()
+        if path in self._file_ast_cache:
+            return self._file_ast_cache[path]
+        txt = self._read_text(path, bom=True)
+        tree = ast.parse(txt, filename=str(path))
+        self._file_ast_cache[path] = tree
+        return tree
+
+    def _slice_lines(self, src: str, lineno: int, end_lineno: int) -> str:
+        lines = src.splitlines(True)
+        a = max(1, int(lineno))
+        b = max(a, int(end_lineno))
+        return "".join(lines[a - 1 : b])
+
+    # ---------------------------------------------------------------------
+    # AST lookup & decorators
+    # ---------------------------------------------------------------------
+
+    def _find_def_node(self, tree: ast.AST, qualname: str, lineno: Optional[int] = None) -> ast.AST:
+        parts = qualname.split(".")
+        body = getattr(tree, "body", [])
+
+        def pick(cands: List[ast.AST]) -> Optional[ast.AST]:
+            if not cands:
+                return None
+            if lineno is None:
+                return cands[0]
+            exact = [n for n in cands if getattr(n, "lineno", None) == lineno]
+            if exact:
+                return exact[0]
+            return sorted(cands, key=lambda n: abs(int(getattr(n, "lineno", 10**9)) - int(lineno)))[0]
+
+        if len(parts) == 1:
+            name = parts[0]
+            cands = [n for n in body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name]
+            node = pick(cands)
+            if node:
+                return node
+            raise RuntimeError(f"Callable not found: {qualname}")
+
+        method = parts[-1]
+        class_chain = parts[:-1]
+
+        cur_body = body
+        for cls_name in class_chain:
+            cls_candidates = [n for n in cur_body if isinstance(n, ast.ClassDef) and n.name == cls_name]
+            if not cls_candidates:
+                raise RuntimeError(f"Class not found in qualname: {qualname}")
+            cur_body = cls_candidates[0].body
+
+        cands = [n for n in cur_body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == method]
+        node = pick(cands)
+        if node:
+            return node
+        raise RuntimeError(f"Callable not found: {qualname}")
+
+    def _decorator_name(self, d: ast.AST) -> str:
+        if isinstance(d, ast.Name):
+            return d.id
+        if isinstance(d, ast.Attribute):
+            left = ast.unparse(d.value) if hasattr(ast, "unparse") else ""
+            return f"{left}.{d.attr}" if left else d.attr
+        return ""
+
+    def _decorator_kind(self, fn: ast.AST) -> str:
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return ""
+        names = [self._decorator_name(d) for d in (fn.decorator_list or [])]
+        for k in ("classmethod", "staticmethod", "property", "cached_property", "functools.cached_property"):
+            if k in names:
+                return k
+        return ""
+
+    def _detect_async_def(self, file_path: Path, qualname: str, lineno: int) -> bool:
+        try:
+            tree = self._parse_file(file_path)
+            node = self._find_def_node(tree, qualname, lineno=lineno)
+            return isinstance(node, ast.AsyncFunctionDef)
+        except Exception:
+            return False
+
+    def _free_names(self, fn: ast.AST) -> Set[str]:
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return set()
+
+        params: Set[str] = set()
+        for a in getattr(fn.args, "posonlyargs", []):
+            params.add(a.arg)
+        for a in fn.args.args:
+            params.add(a.arg)
+        for a in fn.args.kwonlyargs:
+            params.add(a.arg)
+        if fn.args.vararg:
+            params.add(fn.args.vararg.arg)
+        if fn.args.kwarg:
+            params.add(fn.args.kwarg.arg)
+
+        loads: Set[str] = set()
+        stores: Set[str] = set()
+
+        class V(ast.NodeVisitor):
+            def visit_FunctionDef(self, node): return
+            def visit_AsyncFunctionDef(self, node): return
+            def visit_ClassDef(self, node): return
+            def visit_Lambda(self, node): return
+            def visit_Name(self, node: ast.Name):
+                if isinstance(node.ctx, ast.Load):
+                    loads.add(node.id)
+                elif isinstance(node.ctx, (ast.Store, ast.Del)):
+                    stores.add(node.id)
+
+        v = V()
+        for stmt in fn.body:
+            v.visit(stmt)
+
+        locals_ = params | stores
+        return {n for n in loads if n not in locals_}
+
+    # ---------------------------------------------------------------------
+    # UPDATE_IMPORTS helpers
+    # ---------------------------------------------------------------------
+
+    def _iter_python_files(self, package_root: Path) -> Iterable[Path]:
+        skip_dirs = {"__pycache__", ".git", ".venv", "venv", "build", "dist"}
+        for p in package_root.rglob("*.py"):
+            if any(part in skip_dirs for part in p.parts):
+                continue
+            if "unified" in p.parts:
+                continue
+            yield p
+
+    def _file_module_name(self, file_path: Path, package_root: Path, package_name: str) -> str:
+        rel = file_path.resolve().relative_to(package_root.resolve()).as_posix()
+        if rel.endswith(".py"):
+            rel = rel[:-3]
+        if rel.endswith("/__init__"):
+            rel = rel[: -len("/__init__")]
+        rel = rel.replace("/", ".")
+        return f"{package_name}.{rel}" if rel else package_name
+
+    def _resolve_importfrom_abs_module(self, node: ast.ImportFrom, file_module: str) -> str:
+        mod = node.module or ""
+        level = int(node.level or 0)
+        if level <= 0:
+            return mod
+        parts = file_module.split(".")
+        base = parts[:-level] if level <= len(parts) else []
+        if mod:
+            base += mod.split(".")
+        return ".".join([p for p in base if p])
+
+    def _format_importfrom(self, module: Optional[str], names: List[ast.alias], level: int) -> str:
+        prefix = "." * max(0, level)
+        mod = module or ""
+        parts = []
+        for a in names:
+            parts.append(f"{a.name} as {a.asname}" if a.asname else a.name)
+        return f"from {prefix}{mod} import " + ", ".join(parts)
+
+    # ---------------------------------------------------------------------
+    # Module dotted helpers
+    # ---------------------------------------------------------------------
+
+    def _module_dotted_from_target_module(self, target_module: str) -> str:
+        s = target_module.replace("\\", "/").strip()
+        if s.endswith(".py"):
+            s = s[:-3]
+        return ".".join([p for p in s.split("/") if p])
+
+    def _module_dotted_from_filepath(self, file_path: Path, package_root: Path, package_name: str) -> str:
+        rel = file_path.resolve().relative_to(package_root.resolve()).as_posix()
+        if rel.endswith(".py"):
+            rel = rel[:-3]
+        return f"{package_name}.{rel.replace('/', '.')}"
+
+    def _qualify_module(self, mod: str, package_name: str) -> str:
+        mod = (mod or "").strip()
+        if not mod:
+            return mod
+        if mod == package_name or mod.startswith(package_name + "."):
+            return mod
+        return f"{package_name}.{mod}"
+
+    # ---------------------------------------------------------------------
+    # Statistics / recommendations / benefit
+    # ---------------------------------------------------------------------
+
+    def _generate_statistics(self) -> Dict[str, Any]:
+        if not self._functional_map:
+            return {}
+
+        category_counts: Dict[str, int] = {}
+        for block in self._functional_map.blocks.values():
+            key = f"{block.category}:{block.subcategory}"
+            category_counts[key] = category_counts.get(key, 0) + 1
+
+        cluster_stats = {
+            "merge_candidates": sum(1 for c in self._clusters if c.recommendation == RecommendationType.MERGE),
+            "extract_base_candidates": sum(1 for c in self._clusters if c.recommendation == RecommendationType.EXTRACT_BASE),
+            "wrap_only_candidates": sum(1 for c in self._clusters if c.recommendation == RecommendationType.WRAP_ONLY),
+            "keep_separate": sum(1 for c in self._clusters if c.recommendation == RecommendationType.KEEP_SEPARATE),
+        }
+
+        risk_stats = {
+            "low_risk": sum(1 for c in self._clusters if c.risk_level.value == "LOW"),
+            "medium_risk": sum(1 for c in self._clusters if c.risk_level.value == "MEDIUM"),
+            "high_risk": sum(1 for c in self._clusters if c.risk_level.value == "HIGH"),
+        }
+
+        return {
+            "total_blocks": self._functional_map.total_blocks,
+            "total_capabilities": self._functional_map.total_capabilities,
+            "total_clusters": self._functional_map.total_clusters,
+            "resolution_rate": self._functional_map.resolution_rate,
+            "resolution_rate_internal": self._functional_map.resolution_rate_internal,
+            "resolution_rate_actionable": self._functional_map.resolution_rate_actionable,
+            "external_calls_count": self._functional_map.external_calls_count,
+            "dynamic_attribute_calls_count": self._functional_map.dynamic_attribute_calls_count,
+            "category_distribution": category_counts,
+            "cluster_recommendations": cluster_stats,
+            "risk_distribution": risk_stats,
+            "total_plans": len(self._plans),
+        }
+
+    def _generate_recommendations(self) -> List[str]:
+        if not self._functional_map:
+            return ["Run analysis first to get recommendations"]
+
+        recommendations: List[str] = []
+
+        if self._clusters:
+            high_priority = [c for c in self._clusters if c.risk_level.value == "LOW" and c.avg_similarity >= 0.8]
+            if high_priority:
+                recommendations.append(f"Found {len(high_priority)} high-priority, low-risk consolidation opportunities")
+
+        complex_blocks = [b for b in self._functional_map.blocks.values() if b.cyclomatic > 15]
+        if complex_blocks:
+            recommendations.append(f"Consider refactoring {len(complex_blocks)} highly complex blocks (complexity > 15)")
+
+        if self._clusters:
+            category_clusters: Dict[str, int] = {}
+            for cluster in self._clusters:
+                key = f"{cluster.category}:{cluster.subcategory}"
+                category_clusters[key] = category_clusters.get(key, 0) + 1
+            problematic = [k for k, cnt in category_clusters.items() if cnt >= 3]
+            if problematic:
+                recommendations.append(f"Focus on categories with most duplication: {', '.join(problematic[:3])}")
+
+        internal_rate = getattr(self._functional_map, "resolution_rate_internal", self._functional_map.resolution_rate)
+        actionable_rate = getattr(self._functional_map, "resolution_rate_actionable", internal_rate)
+        external_count = getattr(self._functional_map, "external_calls_count", 0)
+        dynamic_count = getattr(self._functional_map, "dynamic_attribute_calls_count", 0)
+
+        recommendations.append(
+            f"Call resolution: {actionable_rate:.1%} actionable, {internal_rate:.1%} internal. "
+            f"External calls: {external_count}, Dynamic attribute calls: {dynamic_count}"
+        )
+        return recommendations
+
+    def _calculate_cluster_benefit(self, cluster: SimilarityCluster) -> float:
+        benefit = 0.0
+        benefit += len(cluster.blocks) * 2
+        benefit += cluster.avg_similarity * 10
+
+        if cluster.recommendation == RecommendationType.MERGE:
+            benefit += 5
+        elif cluster.recommendation == RecommendationType.EXTRACT_BASE:
+            benefit += 3
+        elif cluster.recommendation == RecommendationType.WRAP_ONLY:
+            benefit += 1
+
+        if cluster.risk_level.value == "LOW":
+            benefit += 3
+        elif cluster.risk_level.value == "MEDIUM":
+            benefit += 1
+
+        effort_bonus = {"XS": 5, "S": 4, "M": 2, "L": 1, "XL": 0}
+        benefit += effort_bonus.get(cluster.effort_class.value, 0)
+        return benefit
