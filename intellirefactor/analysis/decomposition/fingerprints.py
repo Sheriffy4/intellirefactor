@@ -14,7 +14,7 @@ from collections import Counter
 from typing import List, Set
 
 from .models import FunctionalBlock
-from .normalization import normalize_for_hash, APIPreservingASTNormalizer as ASTNormalizer  # backward compat
+from .normalization import normalize_for_hash  # backward compat
 from .utils import is_likely_regex
 
 logger = logging.getLogger(__name__)

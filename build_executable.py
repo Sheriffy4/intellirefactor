@@ -5,7 +5,6 @@
 Создает standalone исполняемый файл с помощью PyInstaller
 """
 
-import os
 import sys
 import subprocess
 import shutil

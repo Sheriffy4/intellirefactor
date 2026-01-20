@@ -6,14 +6,13 @@ This script creates distribution packages and validates the installation process
 Implements requirement 2.5 - proper Python package structure.
 """
 
-import os
 import sys
 import subprocess
 import shutil
 import tempfile
 import json
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import Dict, Any, Tuple
 import venv
 
 
@@ -121,7 +120,7 @@ class DistributionPackager:
             )
 
             if result.returncode != 0:
-                print(f"✗ setup.py validation failed:")
+                print("✗ setup.py validation failed:")
                 print(f"  stdout: {result.stdout}")
                 print(f"  stderr: {result.stderr}")
                 return False
@@ -150,7 +149,7 @@ class DistributionPackager:
             )
 
             if result.returncode != 0:
-                print(f"✗ Source distribution build failed:")
+                print("✗ Source distribution build failed:")
                 print(f"  stdout: {result.stdout}")
                 print(f"  stderr: {result.stderr}")
                 return False
@@ -190,7 +189,7 @@ class DistributionPackager:
             )
 
             if result.returncode != 0:
-                print(f"✗ Wheel distribution build failed:")
+                print("✗ Wheel distribution build failed:")
                 print(f"  stdout: {result.stdout}")
                 print(f"  stderr: {result.stderr}")
                 return False
@@ -248,7 +247,7 @@ class DistributionPackager:
                 )
 
                 if result.returncode != 0:
-                    print(f"✗ Installation failed:")
+                    print("✗ Installation failed:")
                     print(f"  stdout: {result.stdout}")
                     print(f"  stderr: {result.stderr}")
                     return False
@@ -263,7 +262,7 @@ class DistributionPackager:
                 )
 
                 if result.returncode != 0:
-                    print(f"✗ Package import failed:")
+                    print("✗ Package import failed:")
                     print(f"  stdout: {result.stdout}")
                     print(f"  stderr: {result.stderr}")
                     return False
@@ -278,7 +277,7 @@ class DistributionPackager:
                 )
 
                 if result.returncode != 0:
-                    print(f"✗ CLI command failed:")
+                    print("✗ CLI command failed:")
                     print(f"  stdout: {result.stdout}")
                     print(f"  stderr: {result.stderr}")
                     return False
@@ -300,7 +299,7 @@ class DistributionPackager:
                 )
 
                 if result.returncode != 0:
-                    print(f"✗ Entry point failed:")
+                    print("✗ Entry point failed:")
                     print(f"  stdout: {result.stdout}")
                     print(f"  stderr: {result.stderr}")
                     return False

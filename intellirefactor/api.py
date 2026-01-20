@@ -13,7 +13,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 
 from .analysis import ProjectAnalyzer, FileAnalyzer
-from .analysis.error_handler import AnalysisErrorHandler, ErrorReporter
+from .analysis.diagnostics.error_handler import AnalysisErrorHandler, ErrorReporter
 from .refactoring import IntelligentRefactoringSystem, AutoRefactor
 from .knowledge import KnowledgeManager
 from .orchestration import (
@@ -306,7 +306,7 @@ class IntelliRefactor:
                 index_path = project_root / ".intellirefactor" / "index.db"
                 if index_path.exists():
                     try:
-                        from .analysis.index_store import IndexStore
+                        from .analysis.index.store import IndexStore
 
                         external_index = IndexStore(index_path)
                     except Exception as e:
@@ -648,7 +648,7 @@ class IntelliRefactor:
 
         try:
             # Convert dict back to AnalysisError if needed
-            from .analysis.error_handler import (
+            from .analysis.diagnostics.error_handler import (
                 AnalysisError,
                 ErrorCategory,
                 ErrorSeverity,
@@ -690,7 +690,7 @@ class IntelliRefactor:
             return {"error": "Error reporting not available"}
 
         try:
-            from .analysis.error_handler import (
+            from .analysis.diagnostics.error_handler import (
                 AnalysisError,
                 ErrorCategory,
                 ErrorSeverity,

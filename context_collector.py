@@ -6,11 +6,9 @@
 учитывая изменяющиеся имена папок и временные метки в именах файлов.
 """
 
-import os
 import re
-import json
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import List, Optional, Tuple
 from dataclasses import dataclass
 import argparse
 

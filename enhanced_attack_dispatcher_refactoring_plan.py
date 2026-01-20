@@ -206,14 +206,14 @@ class EnhancedAttackDispatcherAnalyzer:
         print("🔍 АНАЛИЗ ATTACK_DISPATCHER ДЛЯ УЛУЧШЕННОГО РЕФАКТОРИНГА")
         print("=" * 70)
         
-        print(f"📊 Общая статистика:")
+        print("📊 Общая статистика:")
         print(f"  Размер файла: {plan['original_file_size']:,} байт")
         print(f"  Всего методов: {plan['total_methods']}")
         print(f"  Предлагаемых компонентов: {len(plan['proposed_components'])}")
         print(f"  Методов останется в фасаде: {len(plan['facade_methods'])}")
         print(f"  Ожидаемое уменьшение размера: ~{plan['estimated_size_reduction']:.0f} строк")
         
-        print(f"\n🏗️ ПРЕДЛАГАЕМЫЕ КОМПОНЕНТЫ:")
+        print("\n🏗️ ПРЕДЛАГАЕМЫЕ КОМПОНЕНТЫ:")
         print("-" * 50)
         
         for comp_name, info in plan['proposed_components'].items():
@@ -223,22 +223,22 @@ class EnhancedAttackDispatcherAnalyzer:
             print(f"   Средняя сложность: {info['avg_complexity']:.1f}")
             print(f"   Публичные методы: {len(info['interface_methods'])}")
             
-            print(f"   Методы:")
+            print("   Методы:")
             for method in info['methods']:
                 method_info = next(m for m in self.methods if m['name'] == method)
                 visibility = "🔒" if method.startswith('_') else "🔓"
                 print(f"     {visibility} {method} ({method_info['size_lines']} строк, сложность: {method_info['complexity_score']})")
         
-        print(f"\n🏛️ МЕТОДЫ ФАСАДА:")
+        print("\n🏛️ МЕТОДЫ ФАСАДА:")
         print("-" * 30)
         facade_methods = [m for m in self.methods if m['name'] in plan['facade_methods']]
         for method in facade_methods:
             visibility = "🔒" if method['name'].startswith('_') else "🔓"
             print(f"  {visibility} {method['name']} ({method['size_lines']} строк)")
         
-        print(f"\n📈 СРАВНЕНИЕ С ТЕКУЩИМ РЕФАКТОРИНГОМ:")
+        print("\n📈 СРАВНЕНИЕ С ТЕКУЩИМ РЕФАКТОРИНГОМ:")
         print("-" * 40)
-        print(f"  Текущий: 2 компонента, 2 метода извлечено (2.4% уменьшение)")
+        print("  Текущий: 2 компонента, 2 метода извлечено (2.4% уменьшение)")
         print(f"  Предлагаемый: {len(plan['proposed_components'])} компонентов, ~{sum(info['method_count'] for info in plan['proposed_components'].values())} методов")
         print(f"  Ожидаемое улучшение: ~{(plan['estimated_size_reduction'] / plan['original_file_size'] * 100):.1f}% уменьшение размера")
         
@@ -256,7 +256,7 @@ def main():
     analyzer = EnhancedAttackDispatcherAnalyzer(file_path)
     plan = analyzer.print_analysis_report()
     
-    print(f"\n💡 РЕКОМЕНДАЦИИ:")
+    print("\n💡 РЕКОМЕНДАЦИИ:")
     print("-" * 20)
     print("1. Создать 7-8 специализированных компонентов вместо 2")
     print("2. Извлечь ~35-40 методов вместо 2")

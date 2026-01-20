@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Union
 from dataclasses import dataclass, field
 
+from .ast_utils import assess_class_complexity
+
 
 @dataclass
 class Component:
@@ -190,9 +192,8 @@ class ArchitectureGenerator:
 
     def _calculate_class_complexity(self, node: ast.ClassDef, methods: List[str]) -> str:
         """Calculate class complexity based on various metrics."""
-        # [IR_DELEGATED] Auto-generated wrapper (functional decomposition)
-        from intellirefactor.unified.documentation import assess_class_complexity as __ir_unified_assess_class_complexity
-        return __ir_unified_assess_class_complexity(self, node, methods)
+        # Local implementation (unified module was removed/non-existent)
+        return assess_class_complexity(node, methods)
 
     def _calculate_function_complexity(self, node: Union[ast.FunctionDef, ast.AsyncFunctionDef]) -> str:
         """Calculate function complexity based on various metrics."""

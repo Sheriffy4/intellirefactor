@@ -5,7 +5,6 @@
 Проверяет зависимости, настраивает окружение и создает ярлыки для удобного использования
 """
 
-import os
 import sys
 import subprocess
 import shutil

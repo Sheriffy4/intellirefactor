@@ -1,0 +1,548 @@
+"""
+BlockCloneDetector for IntelliRefactor multi-channel clone detection.
+
+Fixes:
+- robust imports for models (supports old .models and new .foundation.models)
+- Evidence compatibility (file_references vs locations)
+- fallback FingerprintChannel if block_extractor is missing
+- missing import Any fixed
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+from collections import defaultdict
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+try:
+    # canonical
+    from intellirefactor.analysis.foundation.models import BlockInfo, Evidence, BlockType, parse_block_type
+except Exception:  # pragma: no cover
+    # fallback (если что-то пошло не так)
+    raise ImportError(
+        "Cannot import BlockInfo, Evidence from intellirefactor.analysis.foundation.models. "
+        "Please ensure intellirefactor.analysis.foundation is properly installed."
+    )
+
+# FingerprintChannel: try import from your extractor, else define fallback
+try:
+    # New location (after refactor)
+    from intellirefactor.analysis.dedup.block_extractor import FingerprintChannel  # type: ignore
+except Exception:
+    try:
+        # Old location (before refactor)
+        from .block_extractor import FingerprintChannel  # type: ignore
+    except Exception:
+
+        class FingerprintChannel(Enum):
+            EXACT = "exact"
+            STRUCTURAL = "structural"
+            NORMALIZED = "normalized"
+
+
+class CloneType(Enum):
+    EXACT = "exact"
+    STRUCTURAL = "structural"
+    SEMANTIC = "semantic"
+    HYBRID = "hybrid"
+
+
+class ExtractionStrategy(Enum):
+    EXTRACT_METHOD = "extract_method"
+    EXTRACT_FUNCTION = "extract_function"
+    EXTRACT_CLASS = "extract_class"
+    PARAMETERIZE = "parameterize"
+    TEMPLATE_METHOD = "template_method"
+    NO_EXTRACTION = "no_extraction"
+
+
+BlockKey = Tuple[str, int, int]  # (file_path, line_start, line_end)
+
+
+@dataclass
+class CloneInstance:
+    block_info: BlockInfo
+    similarity_score: float
+    evidence: Evidence
+    extraction_feasibility: float  # 0.0 to 1.0
+
+    @property
+    def file_path(self) -> str:
+        return self.block_info.file_reference.file_path
+
+    @property
+    def line_start(self) -> int:
+        return self.block_info.file_reference.line_start
+
+    @property
+    def line_end(self) -> int:
+        return self.block_info.file_reference.line_end
+
+    @property
+    def block_key(self) -> BlockKey:
+        return (self.file_path, self.line_start, self.line_end)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "file_path": self.file_path,
+            "line_start": self.line_start,
+            "line_end": self.line_end,
+            "similarity_score": float(self.similarity_score),
+            "extraction_feasibility": float(self.extraction_feasibility),
+            "lines_of_code": int(getattr(self.block_info, "lines_of_code", 0) or 0),
+            "statement_count": int(getattr(self.block_info, "statement_count", 0) or 0),
+            "nesting_level": int(getattr(self.block_info, "nesting_level", 0) or 0),
+        }
+
+
+@dataclass
+class CloneGroup:
+    group_id: str
+    clone_type: CloneType
+    instances: List[CloneInstance] = field(default_factory=list)
+    similarity_score: float = 0.0
+    detection_channels: Set[FingerprintChannel] = field(default_factory=set)
+    extraction_strategy: Optional[ExtractionStrategy] = None
+    extraction_confidence: float = 0.0
+    evidence: Optional[Evidence] = None
+    ranking_score: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.instances:
+            self._calculate_group_metrics()
+
+    @staticmethod
+    def _clamp01(value: float) -> float:
+        return min(1.0, max(0.0, value))
+
+    def _calculate_group_metrics(self) -> None:
+        if not self.instances:
+            return
+        self.similarity_score = self._clamp01(
+            sum(i.similarity_score for i in self.instances) / len(self.instances)
+        )
+        self._determine_extraction_strategy()
+
+    def _determine_extraction_strategy(self) -> None:
+        if len(self.instances) < 2:
+            self.extraction_strategy = ExtractionStrategy.NO_EXTRACTION
+            self.extraction_confidence = 0.0
+            return
+
+        n = len(self.instances)
+        avg_loc = sum(i.block_info.lines_of_code for i in self.instances) / n
+        avg_stmt = sum(i.block_info.statement_count for i in self.instances) / n
+        avg_feas = sum(i.extraction_feasibility for i in self.instances) / n
+
+        if self.clone_type == CloneType.EXACT:
+            if avg_loc >= 10 and avg_stmt >= 5:
+                self.extraction_strategy = ExtractionStrategy.EXTRACT_METHOD
+                self.extraction_confidence = min(0.95, avg_feas + 0.15)
+            elif avg_loc >= 5:
+                self.extraction_strategy = ExtractionStrategy.EXTRACT_FUNCTION
+                self.extraction_confidence = min(0.85, avg_feas + 0.05)
+            else:
+                self.extraction_strategy = ExtractionStrategy.NO_EXTRACTION
+                self.extraction_confidence = 0.0
+
+        elif self.clone_type == CloneType.STRUCTURAL:
+            if avg_loc >= 15 and avg_stmt >= 8:
+                self.extraction_strategy = ExtractionStrategy.PARAMETERIZE
+                self.extraction_confidence = min(0.85, avg_feas)
+            elif avg_loc >= 8:
+                self.extraction_strategy = ExtractionStrategy.EXTRACT_METHOD
+                self.extraction_confidence = min(0.8, avg_feas)
+            else:
+                self.extraction_strategy = ExtractionStrategy.NO_EXTRACTION
+                self.extraction_confidence = 0.0
+
+        elif self.clone_type == CloneType.SEMANTIC:
+            if avg_loc >= 20 and avg_stmt >= 10:
+                self.extraction_strategy = ExtractionStrategy.TEMPLATE_METHOD
+                self.extraction_confidence = min(0.75, avg_feas)
+            elif avg_loc >= 10:
+                self.extraction_strategy = ExtractionStrategy.PARAMETERIZE
+                self.extraction_confidence = min(0.7, avg_feas)
+            else:
+                self.extraction_strategy = ExtractionStrategy.NO_EXTRACTION
+                self.extraction_confidence = 0.0
+
+        else:  # HYBRID
+            if avg_loc >= 12 and avg_stmt >= 6:
+                self.extraction_strategy = ExtractionStrategy.EXTRACT_METHOD
+                self.extraction_confidence = min(0.9, avg_feas + 0.05)
+            else:
+                self.extraction_strategy = ExtractionStrategy.NO_EXTRACTION
+                self.extraction_confidence = 0.0
+
+        self.extraction_confidence = self._clamp01(self.extraction_confidence)
+
+    def add_instance(self, instance: CloneInstance) -> None:
+        self.instances.append(instance)
+        self._calculate_group_metrics()
+
+    def get_representative_instance(self) -> Optional[CloneInstance]:
+        if not self.instances:
+            return None
+        return max(self.instances, key=lambda i: i.similarity_score * i.extraction_feasibility)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "group_id": self.group_id,
+            "clone_type": self.clone_type.value,
+            "similarity_score": float(self.similarity_score),
+            "ranking_score": float(self.ranking_score),
+            "detection_channels": sorted(c.value for c in self.detection_channels),
+            "extraction_strategy": self.extraction_strategy.value if self.extraction_strategy else None,
+            "extraction_confidence": float(self.extraction_confidence or 0.0),
+            "instance_count": len(self.instances),
+            "instances": [i.to_dict() for i in self.instances],
+        }
+
+
+class BlockCloneDetector:
+    def __init__(
+        self,
+        *,
+        exact_threshold: float = 0.95,
+        structural_threshold: float = 0.85,
+        semantic_threshold: float = 0.75,
+        min_clone_size: int = 3,
+        min_instances: int = 2,
+    ):
+        """
+        Args:
+            exact_threshold: minimum similarity for EXACT groups
+            structural_threshold: minimum similarity for STRUCTURAL/HYBRID groups
+            semantic_threshold: minimum similarity for SEMANTIC groups
+            min_clone_size: minimum LOC for blocks
+            min_instances: minimum instances to form a group
+        """
+        self.exact_threshold = float(exact_threshold)
+        self.structural_threshold = float(structural_threshold)
+        self.semantic_threshold = float(semantic_threshold)
+        self.min_clone_size = min_clone_size
+        self.min_instances = min_instances
+        self.logger = logging.getLogger(__name__)
+
+    @staticmethod
+    def _clamp01(value: float) -> float:
+        return min(1.0, max(0.0, value))
+
+    @staticmethod
+    def _get_block_key(block: BlockInfo) -> BlockKey:
+        ref = block.file_reference
+        return (ref.file_path, ref.line_start, ref.line_end)
+
+    def _mark_as_covered(self, blocks: List[BlockInfo], covered: Set[BlockKey]) -> None:
+        for b in blocks:
+            covered.add(self._get_block_key(b))
+
+    def _filter_uncovered(self, blocks: List[BlockInfo], covered: Set[BlockKey]) -> List[BlockInfo]:
+        return [b for b in blocks if self._get_block_key(b) not in covered]
+
+    def detect_clones(self, blocks: List[BlockInfo]) -> List[CloneGroup]:
+        if len(blocks) < self.min_instances:
+            return []
+
+        filtered = [b for b in blocks if b.lines_of_code >= self.min_clone_size]
+        if len(filtered) < self.min_instances:
+            return []
+
+        covered: Set[BlockKey] = set()
+
+        exact_groups = self._group_by_fingerprint(filtered, "token_fingerprint")
+        structural_groups = self._group_by_fingerprint(filtered, "ast_fingerprint")
+        normalized_groups = self._group_by_fingerprint(filtered, "normalized_fingerprint")
+
+        clone_groups: List[CloneGroup] = []
+
+        # 1) EXACT
+        for group_blocks in exact_groups.values():
+            if len(group_blocks) >= self.min_instances:
+                cg = self._create_clone_group(group_blocks, CloneType.EXACT, {FingerprintChannel.EXACT})
+                if cg:
+                    clone_groups.append(cg)
+                    self._mark_as_covered(group_blocks, covered)
+
+        # 2) HYBRID
+        clone_groups.extend(self._detect_hybrid_clones(filtered, covered))
+
+        # 3) STRUCTURAL
+        for group_blocks in structural_groups.values():
+            if len(group_blocks) >= self.min_instances:
+                uncovered = self._filter_uncovered(group_blocks, covered)
+                if len(uncovered) >= self.min_instances:
+                    cg = self._create_clone_group(uncovered, CloneType.STRUCTURAL, {FingerprintChannel.STRUCTURAL})
+                    if cg:
+                        clone_groups.append(cg)
+                        self._mark_as_covered(uncovered, covered)
+
+        # 4) NORMALIZED ("semantic-ish")
+        for group_blocks in normalized_groups.values():
+            if len(group_blocks) >= self.min_instances:
+                uncovered = self._filter_uncovered(group_blocks, covered)
+                if len(uncovered) >= self.min_instances:
+                    cg = self._create_clone_group(uncovered, CloneType.SEMANTIC, {FingerprintChannel.NORMALIZED})
+                    if cg:
+                        clone_groups.append(cg)
+                        self._mark_as_covered(uncovered, covered)
+
+        ranked = self._rank_clone_groups(clone_groups)
+        return [g for g in ranked if self._passes_threshold(g)]
+
+    def _passes_threshold(self, group: CloneGroup) -> bool:
+        """Apply user thresholds (CLI compatible)."""
+        if group.clone_type == CloneType.EXACT:
+            return group.similarity_score >= self.exact_threshold
+        if group.clone_type in (CloneType.STRUCTURAL, CloneType.HYBRID):
+            return group.similarity_score >= self.structural_threshold
+        if group.clone_type == CloneType.SEMANTIC:
+            return group.similarity_score >= self.semantic_threshold
+        return True
+
+    def _group_by_fingerprint(self, blocks: List[BlockInfo], fingerprint_attr: str) -> Dict[str, List[BlockInfo]]:
+        groups: Dict[str, List[BlockInfo]] = defaultdict(list)
+        for b in blocks:
+            fp = getattr(b, fingerprint_attr, None)
+            if fp:
+                groups[fp].append(b)
+        return dict(groups)
+
+    def _make_group_id(self, clone_type: CloneType, blocks: List[BlockInfo], channels: Set[FingerprintChannel]) -> str:
+        sorted_keys = sorted(f"{b.file_reference.file_path}:{b.file_reference.line_start}-{b.file_reference.line_end}" for b in blocks)
+        channel_str = ",".join(sorted(c.value for c in channels))
+        payload = f"{clone_type.value}|{channel_str}|{'|'.join(sorted_keys)}"
+        digest = hashlib.blake2b(payload.encode("utf-8"), digest_size=16).hexdigest()
+        return f"{clone_type.value}_{digest}"
+
+    def _base_similarity(self, clone_type: CloneType) -> float:
+        return {
+            CloneType.EXACT: 1.0,
+            CloneType.HYBRID: 0.95,
+            CloneType.STRUCTURAL: 0.9,
+            CloneType.SEMANTIC: 0.85,
+        }.get(clone_type, 0.8)
+
+    def _calculate_similarity_score(self, clone_type: CloneType, group_size: int) -> float:
+        base = self._base_similarity(clone_type)
+        bonus = min(0.03, (group_size - 2) * 0.01) if group_size >= 2 else 0.0
+        return self._clamp01(base + bonus)
+
+    def _calculate_extraction_feasibility(self, block: BlockInfo) -> float:
+        feas = 0.5
+        if block.lines_of_code >= 10:
+            feas += 0.2
+        elif block.lines_of_code >= 5:
+            feas += 0.1
+
+        if block.statement_count >= 5:
+            feas += 0.2
+        elif block.statement_count >= 3:
+            feas += 0.1
+
+        if block.nesting_level <= 2:
+            feas += 0.1
+        elif block.nesting_level >= 4:
+            feas -= 0.1
+
+        # Canonicalize block type via parser (supports legacy strings too)
+        if isinstance(block.block_type, BlockType):
+            bt = block.block_type
+        else:
+            raw = block.block_type.value if hasattr(block.block_type, "value") else str(block.block_type)
+            bt = parse_block_type(raw)
+
+        if bt in (BlockType.FUNCTION_BODY, BlockType.METHOD_BODY):
+            feas += 0.1
+        elif bt in (
+            BlockType.IF_BLOCK,
+            BlockType.FOR_LOOP,
+            BlockType.WHILE_LOOP,
+            BlockType.TRY_BLOCK,
+            BlockType.WITH_BLOCK,
+        ):
+            feas += 0.05
+
+        return self._clamp01(feas)
+
+    def _create_clone_group(
+        self,
+        blocks: List[BlockInfo],
+        clone_type: CloneType,
+        channels: Set[FingerprintChannel],
+    ) -> Optional[CloneGroup]:
+        if len(blocks) < self.min_instances:
+            return None
+
+        group_id = self._make_group_id(clone_type, blocks, channels)
+        instances: List[CloneInstance] = []
+
+        similarity = self._calculate_similarity_score(clone_type, len(blocks))
+        for b in blocks:
+            ev = self._create_evidence(b, blocks, clone_type, similarity)
+            feas = self._calculate_extraction_feasibility(b)
+            instances.append(CloneInstance(block_info=b, similarity_score=similarity, evidence=ev, extraction_feasibility=feas))
+
+        group_evidence = self._create_group_evidence(instances, clone_type)
+
+        return CloneGroup(
+            group_id=group_id,
+            clone_type=clone_type,
+            instances=instances,
+            detection_channels=channels,
+            evidence=group_evidence,
+        )
+
+    def _create_evidence(self, block: BlockInfo, group_blocks: List[BlockInfo], clone_type: CloneType, similarity: float) -> Evidence:
+        refs = [block.file_reference] + [b.file_reference for b in group_blocks[:4] if b is not block]
+        description = f"{clone_type.value.title()} clone detected with {len(group_blocks)} instances"
+        metadata = {
+            "clone_type": clone_type.value,
+            "group_size": len(group_blocks),
+            "lines_of_code": block.lines_of_code,
+            "statement_count": block.statement_count,
+            "nesting_level": block.nesting_level,
+        }
+        return Evidence(
+            description=description,
+            confidence=self._clamp01(similarity),
+            file_references=refs[:5],  # Evidence supports legacy input and normalizes to locations
+            code_snippets=[f"Block at {block.file_reference.file_path}:{block.file_reference.line_start}-{block.file_reference.line_end}"],
+            metadata=metadata,
+        )
+
+    def _create_group_evidence(self, instances: List[CloneInstance], clone_type: CloneType) -> Evidence:
+        if not instances:
+            return Evidence(description="Empty clone group", confidence=0.0)
+
+        refs = [i.block_info.file_reference for i in instances]
+        n = len(instances)
+        avg_loc = sum(i.block_info.lines_of_code for i in instances) / n
+        avg_stmt = sum(i.block_info.statement_count for i in instances) / n
+        avg_sim = sum(i.similarity_score for i in instances) / n
+
+        return Evidence(
+            description=f"{clone_type.value.title()} clone group with {n} instances",
+            confidence=self._clamp01(avg_sim),
+            file_references=refs,
+            code_snippets=[f"Clone instance at {i.file_path}:{i.line_start}-{i.line_end}" for i in instances[:5]],
+            metadata={
+                "clone_type": clone_type.value,
+                "instance_count": n,
+                "average_lines_of_code": round(avg_loc, 1),
+                "average_statement_count": round(avg_stmt, 1),
+                "average_similarity_score": round(avg_sim, 3),
+                "files_affected": len({i.file_path for i in instances}),
+            },
+        )
+
+    def _detect_hybrid_clones(self, blocks: List[BlockInfo], covered: Set[BlockKey]) -> List[CloneGroup]:
+        hybrid: List[CloneGroup] = []
+
+        pair_es: Dict[Tuple[str, str], List[BlockInfo]] = defaultdict(list)
+        pair_en: Dict[Tuple[str, str], List[BlockInfo]] = defaultdict(list)
+        pair_sn: Dict[Tuple[str, str], List[BlockInfo]] = defaultdict(list)
+
+        for b in blocks:
+            key = self._get_block_key(b)
+            if key in covered:
+                continue
+            tf = getattr(b, "token_fingerprint", None)
+            af = getattr(b, "ast_fingerprint", None)
+            nf = getattr(b, "normalized_fingerprint", None)
+            if tf and af:
+                pair_es[(tf, af)].append(b)
+            if tf and nf:
+                pair_en[(tf, nf)].append(b)
+            if af and nf:
+                pair_sn[(af, nf)].append(b)
+
+        seen_ids: Set[str] = set()
+        pairs = [
+            (pair_es, {FingerprintChannel.EXACT, FingerprintChannel.STRUCTURAL}),
+            (pair_en, {FingerprintChannel.EXACT, FingerprintChannel.NORMALIZED}),
+            (pair_sn, {FingerprintChannel.STRUCTURAL, FingerprintChannel.NORMALIZED}),
+        ]
+
+        for pair_map, channels in pairs:
+            for group_blocks in pair_map.values():
+                if len(group_blocks) < self.min_instances:
+                    continue
+                uncovered = self._filter_uncovered(group_blocks, covered)
+                if len(uncovered) < self.min_instances:
+                    continue
+                cg = self._create_clone_group(uncovered, CloneType.HYBRID, channels)
+                if cg and cg.group_id not in seen_ids:
+                    hybrid.append(cg)
+                    seen_ids.add(cg.group_id)
+                    self._mark_as_covered(uncovered, covered)
+
+        return hybrid
+
+    def _rank_clone_groups(self, clone_groups: List[CloneGroup]) -> List[CloneGroup]:
+        for g in clone_groups:
+            g.ranking_score = self._calculate_ranking_score(g)
+        ranked = sorted(clone_groups, key=lambda g: g.ranking_score, reverse=True)
+        return [g for g in ranked if g.ranking_score > 0.35]
+
+    def _calculate_ranking_score(self, group: CloneGroup) -> float:
+        if not group.instances:
+            return 0.0
+        n = len(group.instances)
+
+        score = group.similarity_score * 0.3
+        score += min(1.0, n / 10.0) * 0.2
+
+        avg_loc = sum(i.block_info.lines_of_code for i in group.instances) / n
+        score += min(1.0, avg_loc / 20.0) * 0.2
+
+        score += (group.extraction_confidence or 0.0) * 0.2
+
+        unique_files = len({i.file_path for i in group.instances})
+        if unique_files > 1:
+            score += 0.1
+
+        type_weights = {
+            CloneType.EXACT: 1.0,
+            CloneType.HYBRID: 0.95,
+            CloneType.STRUCTURAL: 0.9,
+            CloneType.SEMANTIC: 0.8,
+        }
+        score *= type_weights.get(group.clone_type, 0.8)
+        return self._clamp01(score)
+
+    def get_clone_statistics(self, clone_groups: List[CloneGroup]) -> Dict[str, Any]:
+        if not clone_groups:
+            return {
+                "total_groups": 0,
+                "total_instances": 0,
+                "by_type": {},
+                "by_extraction_strategy": {},
+                "average_similarity": 0.0,
+                "files_affected": 0,
+            }
+
+        total_instances = sum(len(g.instances) for g in clone_groups)
+        by_type: Dict[str, int] = defaultdict(int)
+        by_strategy: Dict[str, int] = defaultdict(int)
+
+        for g in clone_groups:
+            by_type[g.clone_type.value] += 1
+            if g.extraction_strategy:
+                by_strategy[g.extraction_strategy.value] += 1
+
+        avg_similarity = sum(g.similarity_score for g in clone_groups) / len(clone_groups)
+        all_files = {i.file_path for g in clone_groups for i in g.instances}
+
+        return {
+            "total_groups": len(clone_groups),
+            "total_instances": total_instances,
+            "by_type": dict(by_type),
+            "by_extraction_strategy": dict(by_strategy),
+            "average_similarity": round(avg_similarity, 3),
+            "files_affected": len(all_files),
+        }

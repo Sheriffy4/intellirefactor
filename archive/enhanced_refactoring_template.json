@@ -1,0 +1,37 @@
+{
+  "template_name": "enhanced_god_object_refactoring",
+  "version": "1.0",
+  "description": "Улучшенный шаблон рефакторинга God Object с высоким процентом извлечения",
+  "detection_criteria": {
+    "min_methods": 15,
+    "min_lines": 500,
+    "complexity_threshold": 8.0,
+    "responsibilities_threshold": 4
+  },
+  "extraction_strategy": {
+    "approach": "semantic_responsibility_based",
+    "min_methods_per_component": 2,
+    "max_components": 10,
+    "cohesion_threshold": 0.15,
+    "extraction_rate_target": 0.7
+  },
+  "component_naming": {
+    "patterns": {
+      "orchestration": "{Domain}Orchestrator",
+      "strategy": "{Domain}StrategyResolver",
+      "parameter": "{Domain}ParameterProcessor",
+      "protocol": "{Domain}ProtocolHandler",
+      "execution": "{Domain}Executor",
+      "logging": "{Domain}Logger",
+      "parsing": "{Domain}Parser",
+      "validation": "{Domain}Validator",
+      "utility": "{Domain}Utility"
+    }
+  },
+  "quality_metrics": {
+    "min_extraction_rate": 0.5,
+    "max_facade_methods": 10,
+    "max_component_size": 500,
+    "min_cohesion_score": 0.2
+  }
+}

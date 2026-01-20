@@ -116,7 +116,9 @@ class {class_name}({interface_name}):
             return False
 
         except Exception as e:
-            logger.exception("Error checking if component extraction can be applied: %s", e)
+            logger.exception(
+                "Error checking if component extraction can be applied: %s", e
+            )
             return False
 
     def apply(self, file_path: str, **kwargs) -> RefactoringResult:
@@ -131,7 +133,9 @@ class {class_name}({interface_name}):
         try:
             component_name = str(kwargs.get("component_name", "ExtractedComponent"))
             methods_to_extract = list(kwargs.get("methods", []))
-            target_directory = Path(kwargs.get("target_directory", Path(file_path).parent))
+            target_directory = Path(
+                kwargs.get("target_directory", Path(file_path).parent)
+            )
 
             if not methods_to_extract:
                 return RefactoringResult(
@@ -174,7 +178,9 @@ class {class_name}({interface_name}):
                 files_created=[str(interface_path), str(impl_path)],
                 files_modified=[file_path],
                 files_deleted=[],
-                warnings=["Please review extracted component boundaries and update tests"],
+                warnings=[
+                    "Please review extracted component boundaries and update tests"
+                ],
             )
 
         except Exception as e:
@@ -208,10 +214,14 @@ class {class_name}({interface_name}):
         for node in main_class.body:
             if isinstance(node, ast.FunctionDef) and node.name in methods_to_extract:
                 interface_methods.append(self._create_interface_method(node, content))
-                implementation_methods.append(self._extract_method_implementation(node, content))
+                implementation_methods.append(
+                    self._extract_method_implementation(node, content)
+                )
 
         if not interface_methods:
-            raise ValueError("None of the specified methods were found in the target class")
+            raise ValueError(
+                "None of the specified methods were found in the target class"
+            )
 
         component_module = _to_snake_case(component_name)
         interface_name = f"I{component_name}"
@@ -235,7 +245,9 @@ class {class_name}({interface_name}):
 
         return interface_code, implementation_code
 
-    def _create_interface_method(self, method_node: ast.FunctionDef, content: str) -> str:
+    def _create_interface_method(
+        self, method_node: ast.FunctionDef, content: str
+    ) -> str:
         """
         Create an interface method signature from an AST FunctionDef.
 
@@ -284,13 +296,17 @@ class {class_name}({interface_name}):
             f"        ...\n"
         )
 
-    def _extract_method_implementation(self, method_node: ast.FunctionDef, content: str) -> str:
+    def _extract_method_implementation(
+        self, method_node: ast.FunctionDef, content: str
+    ) -> str:
         """Extract original method source by line range."""
         lines = content.splitlines()
         start_line = method_node.lineno - 1
 
         # Include decorators if present.
-        decorator_lines = [getattr(d, "lineno", method_node.lineno) for d in method_node.decorator_list]
+        decorator_lines = [
+            getattr(d, "lineno", method_node.lineno) for d in method_node.decorator_list
+        ]
         start_line = min([start_line] + [dl - 1 for dl in decorator_lines if dl])
 
         end_line = getattr(method_node, "end_lineno", None)
@@ -301,7 +317,9 @@ class {class_name}({interface_name}):
         method_lines = lines[start_line:end_line]
         return "\n".join(method_lines) + "\n"
 
-    def _modify_original_file(self, content: str, component_name: str, methods_to_extract: List[str]) -> str:
+    def _modify_original_file(
+        self, content: str, component_name: str, methods_to_extract: List[str]
+    ) -> str:
         """
         Modify original file:
         - remove extracted methods by exact AST ranges
@@ -403,7 +421,10 @@ class {main_class_name}:
     def can_apply(self, file_path: str, **kwargs) -> bool:
         """Check if configuration splitting can be applied."""
         try:
-            if "config" not in file_path.lower() and "settings" not in file_path.lower():
+            if (
+                "config" not in file_path.lower()
+                and "settings" not in file_path.lower()
+            ):
                 return False
 
             content = Path(file_path).read_text(encoding="utf-8-sig")
@@ -433,7 +454,9 @@ class {main_class_name}:
         """
         try:
             domains: Dict[str, List[str]] = dict(kwargs.get("domains", {}))
-            target_directory = Path(kwargs.get("target_directory", Path(file_path).parent))
+            target_directory = Path(
+                kwargs.get("target_directory", Path(file_path).parent)
+            )
             target_directory.mkdir(parents=True, exist_ok=True)
 
             if not domains:
@@ -463,7 +486,11 @@ class {main_class_name}:
                 domain_config_code = self.domain_config_template.format(
                     domain_name=domain_name.title(),
                     class_name=class_name,
-                    fields="\n".join(domain_fields_code) if domain_fields_code else "    pass",
+                    fields=(
+                        "\n".join(domain_fields_code)
+                        if domain_fields_code
+                        else "    pass"
+                    ),
                 )
 
                 domain_file_path = target_directory / f"{domain_name}_config.py"
@@ -488,7 +515,9 @@ class {main_class_name}:
                 files_created=created_files,
                 files_modified=[],
                 files_deleted=[],
-                warnings=["Please update imports and usage of the original configuration"],
+                warnings=[
+                    "Please update imports and usage of the original configuration"
+                ],
             )
 
         except Exception as e:
@@ -510,7 +539,9 @@ class {main_class_name}:
                 return True
         return False
 
-    def _extract_dataclass_fields(self, cls: ast.ClassDef, content: str) -> Dict[str, str]:
+    def _extract_dataclass_fields(
+        self, cls: ast.ClassDef, content: str
+    ) -> Dict[str, str]:
         """Extract field definitions from a dataclass class body."""
         fields: Dict[str, str] = {}
         for node in cls.body:
@@ -674,14 +705,18 @@ class DIContainer:
         """
         try:
             services = list(kwargs.get("services", []))
-            target_directory = Path(kwargs.get("target_directory", Path(file_path).parent))
+            target_directory = Path(
+                kwargs.get("target_directory", Path(file_path).parent)
+            )
             target_directory.mkdir(parents=True, exist_ok=True)
 
             created_files: List[str] = []
 
             for service_name in services:
                 interface_code = self._create_service_interface(service_name)
-                interface_path = target_directory / f"i_{_to_snake_case(service_name)}.py"
+                interface_path = (
+                    target_directory / f"i_{_to_snake_case(service_name)}.py"
+                )
                 interface_path.write_text(interface_code, encoding="utf-8")
                 created_files.append(str(interface_path))
 
@@ -696,7 +731,9 @@ class DIContainer:
                 files_created=created_files,
                 files_modified=[file_path],
                 files_deleted=[],
-                warnings=["Please review constructor parameters and update service registrations"],
+                warnings=[
+                    "Please review constructor parameters and update service registrations"
+                ],
             )
 
         except Exception as e:
@@ -735,10 +772,12 @@ class DIContainer:
                 lines.insert(insert_at, imp)
                 insert_at += 1
 
-        Path(file_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        Path(file_path).write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
 
     def get_description(self) -> str:
-        return "Introduces dependency injection patterns with interfaces and a container"
+        return (
+            "Introduces dependency injection patterns with interfaces and a container"
+        )
 
 
 class FacadeCreator(RefactoringUtility):
@@ -784,10 +823,14 @@ class {facade_class_name}:
             target_directory: Path | str
         """
         try:
-            facade_class_name = str(kwargs.get("facade_class_name", "BackwardCompatibleFacade"))
+            facade_class_name = str(
+                kwargs.get("facade_class_name", "BackwardCompatibleFacade")
+            )
             services = list(kwargs.get("services", []))
             methods = list(kwargs.get("methods", []))
-            target_directory = Path(kwargs.get("target_directory", Path(file_path).parent))
+            target_directory = Path(
+                kwargs.get("target_directory", Path(file_path).parent)
+            )
             target_directory.mkdir(parents=True, exist_ok=True)
 
             imports = ["from .container import DIContainer"]
@@ -804,7 +847,9 @@ class {facade_class_name}:
             facade_code = self.facade_template.format(
                 facade_class_name=facade_class_name,
                 imports="\n".join(imports),
-                service_initializations=("\n".join(service_inits) if service_inits else "        pass"),
+                service_initializations=(
+                    "\n".join(service_inits) if service_inits else "        pass"
+                ),
                 facade_methods="\n".join(facade_methods).rstrip() + "\n",
             )
 
@@ -816,7 +861,9 @@ class {facade_class_name}:
                 files_created=[str(facade_path)],
                 files_modified=[],
                 files_deleted=[],
-                warnings=["Please review facade method implementations and test backward compatibility"],
+                warnings=[
+                    "Please review facade method implementations and test backward compatibility"
+                ],
             )
 
         except Exception as e:
@@ -865,7 +912,9 @@ class RefactoringUtilityRegistry:
         """Get a refactoring utility by name."""
         return self.utilities.get(name)
 
-    def get_applicable_utilities(self, file_path: str, **kwargs) -> List[Tuple[str, RefactoringUtility]]:
+    def get_applicable_utilities(
+        self, file_path: str, **kwargs
+    ) -> List[Tuple[str, RefactoringUtility]]:
         """Get utilities that can be applied to the given file."""
         applicable: List[Tuple[str, RefactoringUtility]] = []
         for name, utility in self.utilities.items():

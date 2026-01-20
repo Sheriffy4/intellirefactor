@@ -10,12 +10,10 @@
 """
 
 import os
-import os
 import sys
 import json
 import argparse
 import subprocess
-import shutil
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any
@@ -789,7 +787,7 @@ class AutomatedIntelliRefactorAnalyzer:
             for failed in self.analysis_results["failed_analyses"]:
                 report_content += f"- [ОШИБКА] {failed['name']}: {failed['error'][:100]}...\n"
 
-        report_content += f"\n## Созданные файлы\n"
+        report_content += "\n## Созданные файлы\n"
         for file_path in self.analysis_results["generated_files"]:
             relative_path = Path(file_path).relative_to(self.output_dir)
             report_content += f"- {relative_path}\n"
@@ -963,14 +961,14 @@ def main():
         success = analyzer.run_full_analysis()
 
         if success:
-            print(f"\n[УСПЕХ] Анализ успешно завершен!")
+            print("\n[УСПЕХ] Анализ успешно завершен!")
             print(f"[РЕЗУЛЬТАТЫ] Результаты сохранены в: {analyzer.output_dir}")
             print(
                 f"[ОТЧЕТ] Итоговый отчет: {analyzer.output_dir}/SUMMARY_REPORT_{analyzer.timestamp}.md"
             )
             sys.exit(0)
         else:
-            print(f"\n[ОШИБКА] Анализ завершен с ошибками")
+            print("\n[ОШИБКА] Анализ завершен с ошибками")
             print(f"[РЕЗУЛЬТАТЫ] Частичные результаты сохранены в: {analyzer.output_dir}")
             sys.exit(1)
 

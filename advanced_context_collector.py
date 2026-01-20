@@ -10,12 +10,10 @@
 - Сбор данных экспертного анализа
 """
 
-import os
-import re
 import json
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Set
-from dataclasses import dataclass, asdict
+from typing import List, Dict, Tuple
+from dataclasses import asdict
 import argparse
 from context_collector import ContextCollector, ContextFile
 
@@ -299,7 +297,7 @@ class AdvancedContextCollector(ContextCollector):
             if total_lines + file_info.estimated_lines > 2500:
                 print(f"    ⚠️  Превышение лимита строк ({total_lines + file_info.estimated_lines} > 2500)")
             
-            choice = input(f"    Включить в контекст? [y/N/q]: ").strip().lower()
+            choice = input("    Включить в контекст? [y/N/q]: ").strip().lower()
             
             if choice == 'q':
                 break
@@ -308,7 +306,7 @@ class AdvancedContextCollector(ContextCollector):
                 total_lines += file_info.estimated_lines
                 print(f"    ✅ Добавлено (всего строк: {total_lines})")
             else:
-                print(f"    ❌ Пропущено")
+                print("    ❌ Пропущено")
         
         print(f"\n📊 Итого выбрано: {len(selected_files)} файлов, ~{total_lines} строк")
         return selected_files
@@ -497,9 +495,9 @@ class AdvancedContextCollector(ContextCollector):
                 summary += f"- **{file_info.file_type.title()}**: `{Path(file_info.path).name}` (~{file_info.estimated_lines} lines)\n"
                 summary += f"  - {file_info.description}\n"
                 if 'expert_analysis_report' in file_info.path:
-                    summary += f"  - 🚨 **CONTAINS**: Call graph, circular dependencies, external usage, test coverage, characterization tests\n"
+                    summary += "  - 🚨 **CONTAINS**: Call graph, circular dependencies, external usage, test coverage, characterization tests\n"
                 elif 'expert_analysis' in file_info.path and file_info.path.endswith('.json'):
-                    summary += f"  - 📊 **CONTAINS**: Quality score, risk assessment, detailed analysis data\n"
+                    summary += "  - 📊 **CONTAINS**: Quality score, risk assessment, detailed analysis data\n"
             summary += "\n"
         
         # Высокий приоритет (архитектура и планы)
@@ -529,7 +527,7 @@ class AdvancedContextCollector(ContextCollector):
                 summary += f"  - {file_info.description}\n"
             summary += "\n"
         
-        summary += f"""## 🎯 Expert Analysis Highlights
+        summary += """## 🎯 Expert Analysis Highlights
 
 """
         
@@ -546,7 +544,7 @@ class AdvancedContextCollector(ContextCollector):
                 
                 recommendations = expert_data.get('recommendations', [])
                 if recommendations:
-                    summary += f"- **Key Recommendations**:\n"
+                    summary += "- **Key Recommendations**:\n"
                     for rec in recommendations[:3]:  # Первые 3 рекомендации
                         summary += f"  - {rec}\n"
                 summary += "\n"
@@ -689,7 +687,7 @@ def main():
     )
     
     print(f"\n📋 Summary: {summary_path}")
-    print(f"🚀 Ready for LLM refactoring!")
+    print("🚀 Ready for LLM refactoring!")
     
     return 0
 

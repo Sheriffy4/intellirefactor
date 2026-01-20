@@ -7,9 +7,7 @@
 
 import json
 import re
-from pathlib import Path
-from typing import Dict, List, Set, Any, Optional, Tuple
-from collections import defaultdict, Counter
+from typing import Dict, Any
 
 class EnhancedExpertGradeDistiller:
     """Улучшенный дистиллятор экспертного уровня для настоящих 10/10"""
@@ -730,12 +728,12 @@ def main():
         with open(args.output, 'w', encoding='utf-8') as f:
             json.dump(expert_report, f, ensure_ascii=False, indent=2)
         
-        print(f"\n✅ ENHANCED EXPERT-GRADE analysis complete!")
+        print("\n✅ ENHANCED EXPERT-GRADE analysis complete!")
         print(f"📊 Quality score: {expert_report['expert_assessment']['overall_score']}/10.0")
         print(f"📁 Output saved to: {args.output}")
         
         # Показываем статус по 6 пунктам эксперта
-        print(f"\n📋 Enhanced requirements status:")
+        print("\n📋 Enhanced requirements status:")
         for req, status in expert_report['expert_assessment']['requirements_status'].items():
             emoji = "✅" if status == "ENHANCED" else "🔶" if status == "PARTIAL" else "❌"
             print(f"  {emoji} {req}: {status}")
@@ -743,15 +741,15 @@ def main():
         # Показываем что еще нужно для 10/10
         missing = expert_report['expert_assessment']['missing_for_perfect_10']
         if missing:
-            print(f"\n🎯 Remaining gaps for perfect 10/10:")
+            print("\n🎯 Remaining gaps for perfect 10/10:")
             for item in missing:
                 print(f"  • {item}")
         else:
-            print(f"\n🎉 PERFECT 10/10 nearly achieved!")
+            print("\n🎉 PERFECT 10/10 nearly achieved!")
         
         # Показываем улучшения
         improvements = expert_report['metadata']['improvements_since_v1']
-        print(f"\n🚀 Key improvements since v1:")
+        print("\n🚀 Key improvements since v1:")
         for imp in improvements:
             print(f"  + {imp}")
         

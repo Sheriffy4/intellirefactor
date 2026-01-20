@@ -2,36 +2,47 @@
 Unified AST normalization for fingerprints.
 
 Goal:
-- Normalize variable names to reduce noise
+- Normalize variable/argument names to reduce noise
 - Preserve API surface:
-  - keep called function names
-  - keep attribute names (method/property)
+  - keep called function names (foo(...))
+  - keep attribute names (.save/.items/etc)
   - normalize receiver object names (obj.save vs db.save should match)
 """
 
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
 
 
 class APIPreservingASTNormalizer(ast.NodeTransformer):
     def __init__(self):
-        self._var_counter = 0
-        self._var_mapping: dict[str, str] = {}
-        self._in_call_func = False
+        self._counter = 0
+        self._mapping: dict[str, str] = {}
+        self._preserve_name_depth = 0  # preserve only the *callee* Name in Call.func
 
-    def visit(self, node):
-        # wipe positions for stable dump
-        for attr in ("lineno", "col_offset", "end_lineno", "end_col_offset"):
-            if hasattr(node, attr):
-                setattr(node, attr, 0)
-        return super().visit(node)
+    @contextmanager
+    def _preserve_names(self):
+        self._preserve_name_depth += 1
+        try:
+            yield
+        finally:
+            self._preserve_name_depth -= 1
+
+    def _map(self, name: str, *, prefix: str = "var") -> str:
+        if name not in self._mapping:
+            self._mapping[name] = f"{prefix}_{self._counter}"
+            self._counter += 1
+        return self._mapping[name]
 
     def visit_Call(self, node: ast.Call):
-        prev = self._in_call_func
-        self._in_call_func = True
-        node.func = self.visit(node.func)
-        self._in_call_func = prev
+        # Preserve only direct Name as callee: foo(...)
+        if isinstance(node.func, ast.Name):
+            with self._preserve_names():
+                node.func = self.visit(node.func)
+        else:
+            # For Attribute callee (obj.save), we want receiver normalized, attribute preserved
+            node.func = self.visit(node.func)
 
         node.args = [self.visit(a) for a in node.args]
         node.keywords = [self.visit(k) for k in node.keywords]
@@ -41,30 +52,36 @@ class APIPreservingASTNormalizer(ast.NodeTransformer):
         if node.id in ("True", "False", "None", "self", "cls"):
             return node
 
-        # preserve callee name in foo(...)
-        if self._in_call_func and isinstance(node.ctx, ast.Load):
+        # preserve only callee Name in foo(...)
+        if self._preserve_name_depth and isinstance(node.ctx, ast.Load):
             return node
 
-        if node.id not in self._var_mapping:
-            self._var_mapping[node.id] = f"var_{self._var_counter}"
-            self._var_counter += 1
+        node.id = self._map(node.id, prefix="var")
+        return node
 
-        node.id = self._var_mapping[node.id]
+    def visit_arg(self, node: ast.arg):
+        if node.arg in ("self", "cls"):
+            node.annotation = None
+            return node
+        node.arg = self._map(node.arg, prefix="arg")
+        node.annotation = None
         return node
 
     def visit_Attribute(self, node: ast.Attribute):
-        # preserve attr, normalize receiver
+        # preserve .attr, normalize receiver
         node.value = self.visit(node.value)
         return node
 
     def visit_FunctionDef(self, node: ast.FunctionDef):
         if not (node.name.startswith("__") and node.name.endswith("__")):
             node.name = "func"
+        node.returns = None
         return self.generic_visit(node)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
         if not (node.name.startswith("__") and node.name.endswith("__")):
             node.name = "func"
+        node.returns = None
         return self.generic_visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef):
@@ -72,7 +89,7 @@ class APIPreservingASTNormalizer(ast.NodeTransformer):
         return self.generic_visit(node)
 
     def visit_Constant(self, node: ast.Constant):
-        # FIX: bool is subclass of int -> handle it BEFORE int/float
+        # bool is subclass of int -> handle first
         if isinstance(node.value, bool) or node.value is None:
             return node
         if isinstance(node.value, str):
@@ -83,4 +100,6 @@ class APIPreservingASTNormalizer(ast.NodeTransformer):
 
 
 def normalize_for_hash(node: ast.AST) -> ast.AST:
-    return APIPreservingASTNormalizer().visit(node)
+    node2 = APIPreservingASTNormalizer().visit(node)
+    ast.fix_missing_locations(node2)
+    return node2

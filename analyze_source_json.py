@@ -30,7 +30,7 @@ def analyze_json():
     # Пример dispatch_attack вызова
     dispatch_calls = scenarios.get('self.dispatch_attack', [])
     if dispatch_calls:
-        print(f"\nFirst dispatch_attack call:")
+        print("\nFirst dispatch_attack call:")
         first_call = dispatch_calls[0]
         for key, value in first_call.items():
             print(f"  {key}: {value}")

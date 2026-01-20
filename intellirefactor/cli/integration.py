@@ -18,8 +18,8 @@ from intellirefactor.orchestration.global_refactoring_orchestrator import (
 )
 from intellirefactor.orchestration.refactoring_reporter import RefactoringReporter
 from intellirefactor.orchestration.refactoring_validator import RefactoringValidator
-from intellirefactor.analysis.project_analyzer import ProjectAnalyzer
-from intellirefactor.analysis.metrics_analyzer import MetricsAnalyzer
+from intellirefactor.analysis.refactor.project_analyzer import ProjectAnalyzer
+from intellirefactor.analysis.refactor.metrics_analyzer import MetricsAnalyzer
 from intellirefactor.refactoring.intelligent_refactoring_system import (
     IntelligentRefactoringSystem,
 )

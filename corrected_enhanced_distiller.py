@@ -10,9 +10,8 @@
 """
 
 import json
-from pathlib import Path
-from typing import Dict, List, Set, Any, Optional
-from collections import defaultdict, Counter
+from typing import Dict, Any
+from collections import Counter
 
 class CorrectedEnhancedDistiller:
     """Исправленный дистиллятор, который извлекает данные из существующего JSON"""
@@ -379,13 +378,13 @@ def main():
         with open(args.output, 'w', encoding='utf-8') as f:
             json.dump(corrected_report, f, ensure_ascii=False, indent=2)
         
-        print(f"\n✅ CORRECTED enhanced analysis complete!")
+        print("\n✅ CORRECTED enhanced analysis complete!")
         print(f"📊 Expert assessment score: {corrected_report['expert_assessment_corrected']['overall_score']:.1f}/10.0")
         print(f"📁 Output saved to: {args.output}")
         
         # Показываем ключевые находки
         findings = corrected_report['key_findings']
-        print(f"\n🎯 Key findings from EXISTING JSON:")
+        print("\n🎯 Key findings from EXISTING JSON:")
         print(f"  • Real call-sites: {findings['call_sites_discovered']} (found in golden_traces!)")
         print(f"  • External usage files: {findings['files_with_external_usage']}")
         print(f"  • Exception contracts: {findings['methods_with_exception_contracts']}")
@@ -393,7 +392,7 @@ def main():
         print(f"  • Options keys: {findings['options_keys_found']}")
         print(f"  • Golden traces: {findings['golden_traces_available']}")
         
-        print(f"\n💡 Expert feedback resolution:")
+        print("\n💡 Expert feedback resolution:")
         resolution = corrected_report['expert_feedback_resolution']
         print(f"  Problem: {resolution['original_problem']}")
         print(f"  Solution: {resolution['solution_found']}")

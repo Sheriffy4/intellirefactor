@@ -4,7 +4,6 @@
 # Usage: python full_analysis_automated.py <path_to_file_or_project>
 
 import sys
-import os
 import logging
 import argparse
 from pathlib import Path
@@ -48,7 +47,6 @@ def run_comprehensive_analysis(target_path: str, output_dir: Path = None):
         from intellirefactor.orchestration.global_refactoring_orchestrator import (
             GlobalRefactoringOrchestrator,
         )
-        from intellirefactor.api import IntelliRefactor
         from intellirefactor.config import IntelliRefactorConfig
 
         target_path = Path(target_path)
@@ -338,7 +336,7 @@ def main():
 
     if success:
         print("\nAnalysis completed successfully!")
-        print(f"See results in the analysis_reports directory.")
+        print("See results in the analysis_reports directory.")
     else:
         print("\nAnalysis failed!")
         sys.exit(1)

@@ -7,19 +7,14 @@
 """
 
 import sys
-import os
-import json
 import argparse
-import subprocess
 from pathlib import Path
-from datetime import datetime
-import logging
 
 # Добавляем текущую директорию в путь для импорта
 current_dir = Path(__file__).parent
 sys.path.insert(0, str(current_dir))
 
-from contextual_file_analyzer import ContextualFileAnalyzer
+from contextual_file_analyzer import ContextualFileAnalyzer  # noqa: E402
 
 
 class UltimateIntelliRefactorAnalyzer(ContextualFileAnalyzer):

@@ -134,19 +134,19 @@ def demo_enhanced_expert_analyzer():
                 print(f"      Example: {symbol} (priority {priority}) → {len(suggested_tests)} suggested tests")
         
         # Show file sizes
-        print(f"\n📁 Generated Files:")
+        print("\n📁 Generated Files:")
         print(f"  • Detailed JSON: {detailed_json_path.stat().st_size:,} bytes")
         if Path(output_dir, "test_characterization_attack_dispatcher.py").exists():
             test_size = Path(output_dir, "test_characterization_attack_dispatcher.py").stat().st_size
             print(f"  • Executable tests: {test_size:,} bytes")
         
-        print(f"\n🎉 SUCCESS: All expert requirements implemented!")
+        print("\n🎉 SUCCESS: All expert requirements implemented!")
         print(f"📂 Output directory: {output_dir}")
         
         # Show expert recommendations
         if 'expert_recommendations' in detailed_data:
             expert_recs = detailed_data['expert_recommendations']
-            print(f"\n📋 Expert-Specific Recommendations:")
+            print("\n📋 Expert-Specific Recommendations:")
             
             if 'expert_1_requirements' in expert_recs:
                 print("  Expert 1:")

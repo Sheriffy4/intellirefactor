@@ -30,13 +30,14 @@ def enable_high_dpi_awareness():
             ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
             return
         except Exception:
-            pass
-        # Fallback (System DPI aware)
-        try:
-            ctypes.windll.user32.SetProcessDPIAware()
-        except Exception:
-            pass
+            # Fall back to system DPI awareness
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                # If both fail, continue with default DPI handling
+                pass
     except Exception:
+        # If shcore is not available, continue with default DPI handling
         pass
 
 
@@ -118,6 +119,7 @@ class UltimateGUIAnalyzer:
             # DPI (pixels per inch) / 72pt
             self.root.tk.call("tk", "scaling", self.root.winfo_fpixels("1i") / 72.0)
         except Exception:
+            # If DPI scaling fails, continue with default scaling
             pass
 
         # Переменные
@@ -601,6 +603,8 @@ class UltimateGUIAnalyzer:
 
             timeout = 1800 if analysis_type in ["ultimate", "decomposition", "functional_decomposition"] else 1200
 
+            # Bandit B603: subprocess call - check for execution of untrusted input
+            # This is safe because cmd comes from our controlled command construction
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -609,6 +613,7 @@ class UltimateGUIAnalyzer:
                 timeout=timeout,
                 encoding="utf-8",
                 errors="replace",
+                check=False,  # Explicitly disable check to handle errors manually
             )
 
             # ЛОГИРУЕМ РЕЗУЛЬТАТ
@@ -618,12 +623,12 @@ class UltimateGUIAnalyzer:
             print(f"Код возврата: {result.returncode}")
             print(f"Время завершения: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             if result.stdout:
-                print(f"STDOUT (первые 1000 символов):")
+                print("STDOUT (первые 1000 символов):")
                 print(result.stdout[:1000])
                 if len(result.stdout) > 1000:
                     print("... (вывод обрезан)")
             if result.stderr:
-                print(f"STDERR:")
+                print("STDERR:")
                 print(result.stderr)
             print(f"{'='*80}\n")
 
@@ -664,7 +669,7 @@ class UltimateGUIAnalyzer:
 
         # УЛУЧШЕННАЯ ОБРАБОТКА РЕЗУЛЬТАТОВ
         print(f"\n{'='*50}")
-        print(f"ОБРАБОТКА РЕЗУЛЬТАТОВ GUI")
+        print("ОБРАБОТКА РЕЗУЛЬТАТОВ GUI")
         print(f"{'='*50}")
         print(f"Тип анализа: {analysis_type}")
         print(f"Код возврата: {result.returncode}")
@@ -710,31 +715,31 @@ class UltimateGUIAnalyzer:
 
             # Добавляем специфичные описания для каждого типа анализа
             if analysis_type == "ultimate":
-                msg += f"\n🎯 ОПТИМИЗИРОВАННЫЙ ПОДХОД:\n"
-                msg += f"• Фокус на рефакторинге - только нужная информация\n"
-                msg += f"• Реальные паттерны использования из кода\n"
-                msg += f"• Структурированный план действий\n"
-                msg += f"• Экспертные рекомендации с приоритетами\n"
-                msg += f"• Оценка рисков и временные рамки\n"
+                msg += "\n🎯 ОПТИМИЗИРОВАННЫЙ ПОДХОД:\n"
+                msg += "• Фокус на рефакторинге - только нужная информация\n"
+                msg += "• Реальные паттерны использования из кода\n"
+                msg += "• Структурированный план действий\n"
+                msg += "• Экспертные рекомендации с приоритетами\n"
+                msg += "• Оценка рисков и временные рамки\n"
             
             elif analysis_type == "decomposition":
-                msg += f"\n🏗️ АРХИТЕКТУРНАЯ ДЕКОМПОЗИЦИЯ:\n"
-                msg += f"• Выявление God Objects и план их разделения\n"
-                msg += f"• Поиск функциональных дубликатов\n"
-                msg += f"• Кластеризация модулей по функциональности\n"
-                msg += f"• Обнаружение мертвого кода\n"
-                msg += f"• Диаграммы зависимостей и матрицы\n"
+                msg += "\n🏗️ АРХИТЕКТУРНАЯ ДЕКОМПОЗИЦИЯ:\n"
+                msg += "• Выявление God Objects и план их разделения\n"
+                msg += "• Поиск функциональных дубликатов\n"
+                msg += "• Кластеризация модулей по функциональности\n"
+                msg += "• Обнаружение мертвого кода\n"
+                msg += "• Диаграммы зависимостей и матрицы\n"
             
             elif analysis_type == "functional_decomposition":
-                msg += f"\n🔧 ФУНКЦИОНАЛЬНАЯ ДЕКОМПОЗИЦИЯ:\n"
-                msg += f"• Извлечение атомарных функциональных блоков\n"
-                msg += f"• Автоматическая категоризация по назначению\n"
-                msg += f"• Кластеризация похожей функциональности\n"
-                msg += f"• Планы безопасной консолидации (wrappers + migration)\n"
-                msg += f"• Пошаговые патчи с валидацией\n"
-                msg += f"• Детальные отчеты и визуализации\n"
+                msg += "\n🔧 ФУНКЦИОНАЛЬНАЯ ДЕКОМПОЗИЦИЯ:\n"
+                msg += "• Извлечение атомарных функциональных блоков\n"
+                msg += "• Автоматическая категоризация по назначению\n"
+                msg += "• Кластеризация похожей функциональности\n"
+                msg += "• Планы безопасной консолидации (wrappers + migration)\n"
+                msg += "• Пошаговые патчи с валидацией\n"
+                msg += "• Детальные отчеты и визуализации\n"
 
-            msg += f"\nОткройте итоговый отчет для просмотра результатов."
+            msg += "\nОткройте итоговый отчет для просмотра результатов."
 
             print(f"Показываем сообщение об успехе для {analysis_type}")
             messagebox.showinfo("Анализ завершен", msg)
@@ -745,9 +750,13 @@ class UltimateGUIAnalyzer:
                     if sys.platform == "win32":
                         os.startfile(self.output_dir.get())
                     elif sys.platform == "darwin":
-                        subprocess.run(["open", self.output_dir.get()])
+                        # Bandit B607: Starting process with partial executable path
+                        # This is safe for system commands on macOS
+                        subprocess.run(["open", self.output_dir.get()], check=False)
                     else:
-                        subprocess.run(["xdg-open", self.output_dir.get()])
+                        # Bandit B607: Starting process with partial executable path
+                        # This is safe for system commands on Linux
+                        subprocess.run(["xdg-open", self.output_dir.get()], check=False)
                 except Exception as e:
                     print(f"Не удалось открыть папку: {e}")
         else:
@@ -848,7 +857,7 @@ class UltimateGUIAnalyzer:
         ).pack(side="right")
 
         # Показываем основное сообщение об ошибке
-        messagebox.showerror("Ошибка анализа", f"Произошла ошибка во время анализа.\n\nОткроется окно с подробной информацией для отладки.")
+        messagebox.showerror("Ошибка анализа", "Произошла ошибка во время анализа.\n\nОткроется окно с подробной информацией для отладки.")
 
     def _copy_to_clipboard(self, text: str):
         """Копирует текст в буфер обмена"""

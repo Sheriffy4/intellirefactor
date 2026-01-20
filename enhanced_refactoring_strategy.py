@@ -7,7 +7,7 @@
 """
 
 from pathlib import Path
-from typing import Dict, List, Any, Set, Tuple
+from typing import Dict, List, Any
 import ast
 import re
 import logging
@@ -114,7 +114,7 @@ class EnhancedRefactoringStrategy:
         
         # Извлекаем использование атрибутов
         attributes = re.findall(r'self\.([a-zA-Z_][a-zA-Z0-9_]*)', method_content)
-        attributes = [attr for attr in attributes if not attr in calls]  # Исключаем вызовы методов
+        attributes = [attr for attr in attributes if attr not in calls]  # Исключаем вызовы методов
         
         # Извлекаем семантические ключевые слова
         semantic_keywords = self._extract_semantic_keywords(method_content, method_node.name)
@@ -460,12 +460,12 @@ def main():
         print("=" * 50)
         
         enhanced = config['enhanced_refactoring']
-        print(f"📊 Анализ:")
+        print("📊 Анализ:")
         print(f"  Всего методов: {enhanced['total_methods_analyzed']}")
         print(f"  Предлагаемых компонентов: {enhanced['proposed_components']}")
         print(f"  Ожидаемый процент извлечения: {enhanced['expected_extraction_rate']:.1%}")
         
-        print(f"\n🏗️ Планы компонентов:")
+        print("\n🏗️ Планы компонентов:")
         for plan in enhanced['component_plans']:
             print(f"\n📦 {plan['name']}")
             print(f"   {plan['description']}")

@@ -220,7 +220,7 @@ def clean_optimized_report(input_path, output_path):
 
 def analyze_cleaned_report(report_path):
     """Анализирует очищенный отчет"""
-    print(f"\n🔍 АНАЛИЗ ОЧИЩЕННОГО ОТЧЕТА")
+    print("\n🔍 АНАЛИЗ ОЧИЩЕННОГО ОТЧЕТА")
     print("=" * 50)
     
     try:
@@ -243,7 +243,7 @@ def analyze_cleaned_report(report_path):
     # Подробный анализ ключевых разделов
     if 'real_usage_patterns' in data:
         patterns = data['real_usage_patterns']
-        print(f"\n🎯 Real Usage Patterns:")
+        print("\n🎯 Real Usage Patterns:")
         for key, value in patterns.items():
             if isinstance(value, list):
                 print(f"  {key}: {len(value)} элементов")
@@ -252,7 +252,7 @@ def analyze_cleaned_report(report_path):
     
     if 'api_contracts' in data:
         contracts = data['api_contracts']
-        print(f"\n🔗 API Contracts:")
+        print("\n🔗 API Contracts:")
         if isinstance(contracts, dict):
             for key in contracts.keys():
                 print(f"  - {key}")
@@ -339,18 +339,18 @@ def main():
     cleaned_path = clean_optimized_report(input_path, output_path)
 
     if cleaned_path is None:
-        print(f"\n❌ ОШИБКА: Не удалось обработать файл")
+        print("\n❌ ОШИБКА: Не удалось обработать файл")
         sys.exit(1)
 
     # Анализируем результат (если не отключен)
     if not args.no_analysis:
         analyze_cleaned_report(cleaned_path)
 
-    print(f"\n✅ ДИСТИЛЛЯЦИЯ ЗАВЕРШЕНА УСПЕШНО!")
+    print("\n✅ ДИСТИЛЛЯЦИЯ ЗАВЕРШЕНА УСПЕШНО!")
     print("=" * 80)
     print(f"📁 Исходный файл: {input_path}")
     print(f"📁 Дистиллированный файл: {cleaned_path}")
-    print(f"📊 Размер файла уменьшен, шум удален")
+    print("📊 Размер файла уменьшен, шум удален")
     
     sys.exit(0)
 

@@ -17,15 +17,12 @@ Project Decomposition Analyzer - Анализатор архитектурной
 """
 
 import sys
-import os
 import json
 import ast
 import re
 from pathlib import Path
-from datetime import datetime
-from typing import Dict, List, Set, Any, Optional, Tuple
-from collections import defaultdict, Counter
-import logging
+from typing import Dict, List, Set, Optional
+from collections import defaultdict
 
 # Добавляем текущую директорию в путь для импорта
 current_dir = Path(__file__).parent
@@ -674,7 +671,7 @@ class ProjectDecompositionAnalyzer(ContextualFileAnalyzer):
                 for suggestion in suggestions:
                     return f"- **{suggestion['new_class_name']}**: {suggestion['rationale']} ({len(suggestion['methods'])} методов)\n"
 
-        return f"""
+        return """
 
 ### Функциональные дубликаты
 """
@@ -687,7 +684,7 @@ class ProjectDecompositionAnalyzer(ContextualFileAnalyzer):
                     return f"- Дубликат: {items[0]['info']['name']} ↔ {items[1]['info']['name']} (схожесть: {group['similarity']:.1%})\n"
                     return f"  Рекомендация: {group['recommendation']}\n"
 
-        return f"""
+        return """
 
 ## [КЛАСТЕРЫ] Кластеры функциональности
 
@@ -704,7 +701,7 @@ class ProjectDecompositionAnalyzer(ContextualFileAnalyzer):
                         return f"- ... и еще {len(cluster_info['modules']) - 5} модулей\n"
                     return f"[РЕКОМЕНДАЦИЯ] Рассмотрите создание единого {functionality} пакета\n"
 
-        return f"""
+        return """
 
 ## [ОЧИСТКА] Очистка проекта
 
@@ -719,7 +716,7 @@ class ProjectDecompositionAnalyzer(ContextualFileAnalyzer):
                 return f"- ... и еще {len(dead_modules) - 10} модулей\n"
             return f"\n[ВНИМАНИЕ] {dead_code.get('analysis_note', '')}\n"
 
-        return f"""
+        return """
 
 ## [ПЛАН] План реорганизации
 
@@ -735,7 +732,7 @@ class ProjectDecompositionAnalyzer(ContextualFileAnalyzer):
                 cls_info = god_info['class_info']
                 return f"{i}. **{cls_info['name']}** - разделить на {len(god_info['decomposition_suggestions'])} специализированных класса\n"
 
-        return f"""
+        return """
 
 ### Фаза 2: Устранение дубликатов (1-2 недели)
 """
@@ -751,7 +748,7 @@ class ProjectDecompositionAnalyzer(ContextualFileAnalyzer):
                 items = group['items']
                 return f"{i}. Объединить {functionality} логику: {items[0]['info']['name']} + {items[1]['info']['name']}\n"
 
-        return f"""
+        return """
 
 ### Фаза 3: Консолидация функциональности (1-3 недели)
 """
@@ -763,15 +760,15 @@ class ProjectDecompositionAnalyzer(ContextualFileAnalyzer):
             for i, (functionality, cluster_info) in enumerate(consolidation_candidates, 1):
                 return f"{i}. Создать {functionality} пакет из {cluster_info['count']} модулей\n"
 
-        return f"""
+        return """
 
 ### Фаза 4: Очистка проекта (1 неделя)
 """
 
         if dead_modules:
             return f"1. Проверить и удалить {len(dead_modules)} потенциально неиспользуемых модулей\n"
-            return f"2. Провести анализ покрытия кода для подтверждения\n"
-            return f"3. Обновить документацию и зависимости\n"
+            return "2. Провести анализ покрытия кода для подтверждения\n"
+            return "3. Обновить документацию и зависимости\n"
 
         return f"""
 

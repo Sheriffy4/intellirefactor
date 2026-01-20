@@ -18,20 +18,12 @@ This module includes:
 from __future__ import annotations
 
 import ast
-import copy
-import difflib
-import io
 import json
 import logging
-import py_compile
-import re
-import shutil
 import sys
-import textwrap
-import tokenize
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .models import (
     ApplicationMode,
@@ -48,6 +40,10 @@ from .models import (
 from .functional_map import FunctionalMapBuilder
 from .consolidation_planner import ConsolidationPlanner
 from .report_generator import DecompositionReportGenerator
+from .file_operations import FileOperations
+from .safe_exact_evaluator import SafeExactEvaluator
+from .unified_symbol_generator import UnifiedSymbolGenerator
+from . import ast_utils
 
 logger = logging.getLogger(__name__)
 
@@ -87,14 +83,57 @@ class DecompositionAnalyzer:
         self._clusters: List[SimilarityCluster] = []
         self._plans: List[CanonicalizationPlan] = []
 
-        # speed caches
-        self._file_text_cache: Dict[Path, str] = {}
-        self._file_ast_cache: Dict[Path, ast.Module] = {}
+        # File operations with caching (extracted from god class)
+        self.file_ops = FileOperations(self.config, self.logger)
+        
+        # SAFE_EXACT evaluator (extracted from god class)
+        self.safe_exact_eval = SafeExactEvaluator(
+            self.file_ops, 
+            ast_utils, 
+            self._SAFE_DECORATORS_ALLOWLIST
+        )
+        
+        # Unified symbol generator (extracted from god class)
+        self.unified_gen = UnifiedSymbolGenerator(
+            self.file_ops,
+            ast_utils,
+            self._WRAPPER_MARKER
+        )
+        
+        # Wrapper patcher (extracted from god class)
+        from .wrapper_patcher import WrapperPatcher
+        self.wrapper_patcher = WrapperPatcher(
+            self._WRAPPER_MARKER,
+            self._SAFE_DECORATORS_ALLOWLIST,
+            ast_utils
+        )
+        
+        # Import updater (extracted from god class)
+        from .import_updater import ImportUpdater
+        self.import_updater = ImportUpdater(self.file_ops, self.logger)
+        
+        # Unified alias validator (extracted from god class)
+        from .validation import UnifiedAliasValidator
+        self.alias_validator = UnifiedAliasValidator()
+        
+        # Statistics generator (extracted from god class)
+        from .statistics_generator import StatisticsGenerator
+        self.stats_gen = StatisticsGenerator()
 
     # ---------------------------------------------------------------------
     # Public API
     # ---------------------------------------------------------------------
 
+    def _stable_suffix(self, s: str) -> str:
+        """Delegate to unified_symbol_generator.stable_suffix."""
+        from .unified_symbol_generator import stable_suffix
+        return stable_suffix(s)
+    
+    def _has_top_level_line(self, src: str, line: str) -> bool:
+        """Delegate to unified_symbol_generator.has_top_level_line."""
+        from .unified_symbol_generator import has_top_level_line
+        return has_top_level_line(src, line)
+    
     def analyze_project(
         self,
         project_root: str,
@@ -175,6 +214,8 @@ class DecompositionAnalyzer:
                 "duration_seconds": (datetime.now() - start_time).total_seconds(),
             }
 
+    
+    
     def get_functional_map(self) -> Optional[ProjectFunctionalMap]:
         return self._functional_map
 
@@ -424,6 +465,8 @@ class DecompositionAnalyzer:
                                 target_file=target_file,
                                 target_symbol=target_symbol,
                                 canonical_block=canonical_block,
+                                canonical_block_id=canonical_id or "",
+                                cluster_id=plan.cluster_id,
                                 package_root=package_root,
                                 package_name=package_name,
                             )
@@ -470,9 +513,10 @@ class DecompositionAnalyzer:
                             continue
 
                         old_src = self._read_text(src_file, bom=True)
-                        if self._WRAPPER_MARKER in old_src:
+                        seg = self._slice_lines(old_src, block.lineno, block.end_lineno)
+                        if self._WRAPPER_MARKER in seg:
                             plan_record["skipped_steps"].append(
-                                {"step_id": step.id, "kind": step.kind.value, "reason": "already wrapped (marker present)"}
+                                {"step_id": step.id, "kind": step.kind.value, "reason": "already wrapped (marker in callable slice)"}
                             )
                             continue
 
@@ -558,7 +602,6 @@ class DecompositionAnalyzer:
     # ---------------------------------------------------------------------
     # SAFE_EXACT evaluation
     # ---------------------------------------------------------------------
-
     def _evaluate_safe_exact(
         self,
         plan: CanonicalizationPlan,
@@ -566,72 +609,8 @@ class DecompositionAnalyzer:
         fm: ProjectFunctionalMap,
         package_root: Path,
     ) -> Tuple[str, str]:
-        if not cluster:
-            return "SAFE_EXACT_FAIL", "cluster not found"
-
-        block_ids = list(cluster.blocks or [])
-        if len(block_ids) < 2:
-            return "SAFE_EXACT_FAIL", "cluster has <2 blocks"
-
-        fps: Set[str] = set()
-        for bid in block_ids:
-            b = fm.blocks.get(bid)
-            if not b:
-                return "SAFE_EXACT_FAIL", f"missing block id {bid}"
-            fp = self._normalized_callable_fingerprint(b, package_root)
-            if not fp:
-                return "SAFE_EXACT_FAIL", f"cannot fingerprint {b.qualname}"
-            fps.add(fp)
-
-        if len(fps) == 1:
-            return "SAFE_EXACT_OK", "normalized body fingerprints match"
-        return "SAFE_EXACT_FAIL", f"normalized body fingerprints differ ({len(fps)} variants)"
-
-    def _normalized_callable_fingerprint(self, block: FunctionalBlock, package_root: Path) -> str:
-        file_path = self._resolve_block_file_path(block, package_root)
-        if not file_path.exists():
-            return ""
-
-        try:
-            tree = self._parse_file(file_path)
-            node = self._find_def_node(tree, block.qualname, lineno=block.lineno)
-        except Exception:
-            return ""
-
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            return ""
-
-        dec_kind = self._decorator_kind(node)
-        kind_prefix = f"{'method' if block.is_method else 'function'}|{dec_kind}|{'async' if isinstance(node, ast.AsyncFunctionDef) else 'sync'}"
-
-        node2 = copy.deepcopy(node)
-        node2.name = "__X__"
-        node2.decorator_list = []
-
-        # drop docstring
-        if (
-            node2.body
-            and isinstance(node2.body[0], ast.Expr)
-            and isinstance(getattr(node2.body[0], "value", None), ast.Constant)
-            and isinstance(node2.body[0].value.value, str)
-        ):
-            node2.body = node2.body[1:]
-
-        # drop annotations
-        for a in getattr(node2.args, "posonlyargs", []):
-            a.annotation = None
-        for a in node2.args.args:
-            a.annotation = None
-        for a in node2.args.kwonlyargs:
-            a.annotation = None
-        if node2.args.vararg:
-            node2.args.vararg.annotation = None
-        if node2.args.kwarg:
-            node2.args.kwarg.annotation = None
-        node2.returns = None
-
-        dumped = ast.dump(node2, include_attributes=False)
-        return kind_prefix + "|" + dumped
+        """Delegate to safe_exact_eval.evaluate_safe_exact."""
+        return self.safe_exact_eval.evaluate_safe_exact(plan, cluster, fm, package_root)
 
     # ---------------------------------------------------------------------
     # Canonical selection
@@ -706,74 +685,14 @@ class DecompositionAnalyzer:
         package_root: Path,
         package_name: str,
     ) -> Tuple[str, bool, List[str]]:
-        warnings: List[str] = []
-        existing = self._read_text(target_file)
-
-        if re.search(rf"^\s*(async\s+def|def)\s+{re.escape(target_symbol)}\s*\(", existing, flags=re.M):
-            return existing, True, ["symbol already exists"]
-
-        if canonical_block.is_method:
-            return existing, False, ["moved_impl only for top-level functions"]
-
-        src_file = self._resolve_block_file_path(canonical_block, package_root)
-        src_text = self._read_text(src_file, bom=True)
-
-        try:
-            mod_tree = ast.parse(src_text, filename=str(src_file))
-            fn_node = self._find_def_node(mod_tree, canonical_block.qualname, lineno=canonical_block.lineno)
-        except Exception as e:
-            return existing, False, [f"cannot locate canonical def: {e}"]
-
-        if not isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            return existing, False, ["canonical node is not a function def"]
-
-        if fn_node.decorator_list:
-            return existing, False, ["decorators present on canonical callable"]
-
-        snippet = self._slice_lines(src_text, canonical_block.lineno, canonical_block.end_lineno)
-        snippet = textwrap.dedent(snippet)
-
-        try:
-            sn_tree = ast.parse(snippet)
-        except SyntaxError as e:
-            return existing, False, [f"snippet parse failed: {e}"]
-
-        sn_fn = next((n for n in sn_tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
-        if not sn_fn:
-            return existing, False, ["no def in snippet"]
-
-        sn_fn.name = target_symbol
-        sn_fn.decorator_list = []
-        ast.fix_missing_locations(sn_fn)
-
-        fn_src = ast.unparse(sn_fn)
-        if "__ir_unified_" in fn_src or self._WRAPPER_MARKER in fn_src:
-            return existing, False, ["canonical already looks like wrapper/delegation; skip moved_impl"]
-
-        # Conservative free-name check
-        free = self._free_names(sn_fn)
-        free = {n for n in free if not hasattr(__builtins__, n)}
-        if free:
-            return existing, False, [f"unknown free names in moved_impl: {sorted(free)[:5]}"]
-
-        header = existing
-        if not header.strip():
-            header = (
-                '"""Auto-generated unified implementations.\n'
-                "Generated by functional decomposition analyzer.\n"
-                '"""\n\n'
-                "from __future__ import annotations\n\n"
-            )
-
-        block = "\n".join(
-            [
-                "",
-                f"# --- Auto-generated: {target_symbol} (moved from {canonical_block.qualname}) ---",
-                ast.unparse(sn_fn),
-                "",
-            ]
+        """Delegate to unified_gen.ensure_unified_symbol_moved_impl."""
+        return self.unified_gen.ensure_unified_symbol_moved_impl(
+            target_file=target_file,
+            target_symbol=target_symbol,
+            canonical_block=canonical_block,
+            package_root=package_root,
+            package_name=package_name,
         )
-        return header + block, True, warnings
 
     def _ensure_unified_symbol_delegating(
         self,
@@ -781,78 +700,33 @@ class DecompositionAnalyzer:
         target_file: Path,
         target_symbol: str,
         canonical_block: FunctionalBlock,
+        canonical_block_id: str,
+        cluster_id: str,
         package_root: Path,
         package_name: str,
     ) -> str:
-        existing = self._read_text(target_file)
-        if re.search(rf"^\s*(async\s+def|def)\s+{re.escape(target_symbol)}\s*\(", existing, flags=re.M):
-            return existing
+        """Delegate to unified_gen.ensure_unified_symbol_delegating."""
+        return self.unified_gen.ensure_unified_symbol_delegating(
+            target_file=target_file,
+            target_symbol=target_symbol,
+            canonical_block=canonical_block,
+            canonical_block_id=canonical_block_id,
+            cluster_id=cluster_id,
+            package_root=package_root,
+            package_name=package_name,
+            module_dotted_from_filepath_fn=self._module_dotted_from_filepath,
+            qualify_module_fn=self._qualify_module,
+        )
 
-        src_file = self._resolve_block_file_path(canonical_block, package_root)
-        orig_mod = self._qualify_module(canonical_block.module, package_name) or self._module_dotted_from_filepath(src_file, package_root, package_name)
-        is_async = self._detect_async_def(src_file, canonical_block.qualname, canonical_block.lineno)
-
-        header = existing
-        if not header.strip():
-            header = (
-                '"""Auto-generated unified implementations.\n'
-                "Safe mode delegates to canonical originals.\n"
-                '"""\n\n'
-                "from __future__ import annotations\n\n"
-            )
-
-        lines: List[str] = []
-        lines.append("")
-        lines.append(f"# --- Auto-generated: {target_symbol} (delegate to canonical) ---")
-
-        if canonical_block.is_method:
-            mod_alias = "__ir_canonical_mod"
-            lines.append(f"import {orig_mod} as {mod_alias}")
-
-            class_chain = canonical_block.qualname.split(".")[:-1]
-            meth = canonical_block.method_name
-            cls_expr = mod_alias + "".join(f".{c}" for c in class_chain)
-
-            dec_kind = ""
-            try:
-                tree = self._parse_file(src_file)
-                node = self._find_def_node(tree, canonical_block.qualname, lineno=canonical_block.lineno)
-                dec_kind = self._decorator_kind(node)
-            except Exception:
-                dec_kind = ""
-
-            lines.append("")
-            if is_async:
-                lines.append(f"async def {target_symbol}(*args, **kwargs):")
-                call = self._canonical_method_call_expr(cls_expr, meth, dec_kind)
-                lines.append(f"    return await {call}")
-            else:
-                lines.append(f"def {target_symbol}(*args, **kwargs):")
-                call = self._canonical_method_call_expr(cls_expr, meth, dec_kind)
-                lines.append(f"    return {call}")
-        else:
-            fn = canonical_block.method_name
-            alias = f"__ir_canonical_{fn}"
-            lines.append(f"from {orig_mod} import {fn} as {alias}")
-            lines.append("")
-            if is_async:
-                lines.append(f"async def {target_symbol}(*args, **kwargs):")
-                lines.append(f"    return await {alias}(*args, **kwargs)")
-            else:
-                lines.append(f"def {target_symbol}(*args, **kwargs):")
-                lines.append(f"    return {alias}(*args, **kwargs)")
-
-        lines.append("")
-        return header + "\n".join(lines)
-
+    def _find_existing_unified_symbol_meta(self, src: str, symbol: str) -> Optional[Dict[str, str]]:
+        """Delegate to unified_symbol_generator.find_existing_unified_symbol_meta."""
+        from .unified_symbol_generator import find_existing_unified_symbol_meta
+        return find_existing_unified_symbol_meta(src, symbol)
+    
     def _canonical_method_call_expr(self, cls_expr: str, meth: str, dec_kind: str) -> str:
-        if dec_kind == "classmethod":
-            return f"getattr({cls_expr}, {meth!r}).__func__(args[0], *args[1:], **kwargs)"
-        if dec_kind == "staticmethod":
-            return f"getattr({cls_expr}, {meth!r})(*args, **kwargs)"
-        if dec_kind in ("property", "cached_property", "functools.cached_property"):
-            return f"(getattr({cls_expr}, {meth!r}).fget)(args[0], *args[1:], **kwargs)"
-        return f"getattr({cls_expr}, {meth!r})(args[0], *args[1:], **kwargs)"
+        """Delegate to unified_symbol_generator.canonical_method_call_expr."""
+        from .unified_symbol_generator import canonical_method_call_expr
+        return canonical_method_call_expr(cls_expr, meth, dec_kind)
 
     # ---------------------------------------------------------------------
     # Wrapper patch
@@ -867,61 +741,19 @@ class DecompositionAnalyzer:
         unified_symbol: str,
         package_name: str,
     ) -> str:
-        tree = ast.parse(source_code)
-        node = self._find_def_node(tree, block.qualname, lineno=block.lineno)
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            raise RuntimeError(f"Cannot locate callable node for {block.qualname}")
-
-        dec_names = [self._decorator_name(d) for d in (node.decorator_list or [])]
-        dec_bad = [d for d in dec_names if d and d not in self._SAFE_DECORATORS_ALLOWLIST]
-        if dec_bad:
-            raise RuntimeError(f"Unsupported decorators: {dec_bad}")
-
-        body_start_lineno: Optional[int] = None
-        if node.body:
-            if (
-                isinstance(node.body[0], ast.Expr)
-                and isinstance(getattr(node.body[0], "value", None), ast.Constant)
-                and isinstance(node.body[0].value.value, str)
-            ):
-                body_start_lineno = getattr(node.body[0], "end_lineno", node.body[0].lineno) + 1
-            else:
-                body_start_lineno = node.body[0].lineno
-
-        end_lineno = getattr(node, "end_lineno", None)
-        if not body_start_lineno or not end_lineno:
-            return source_code
-
-        lines = source_code.splitlines(True)
-        indent = " " * (node.col_offset + 4)
-        mod_dotted = self._module_dotted_from_target_module(unified_module)
-        alias = f"__ir_unified_{unified_symbol}"
-        call_args = self._build_call_arguments(node.args)
-
-        wrapper_lines: List[str] = []
-        wrapper_lines.append(f"{indent}# {self._WRAPPER_MARKER}\n")
-        wrapper_lines.append(f"{indent}from {package_name}.{mod_dotted} import {unified_symbol} as {alias}\n")
-        if isinstance(node, ast.AsyncFunctionDef):
-            wrapper_lines.append(f"{indent}return await {alias}({call_args})\n")
-        else:
-            wrapper_lines.append(f"{indent}return {alias}({call_args})\n")
-
-        new_lines = lines[: body_start_lineno - 1] + wrapper_lines + lines[end_lineno:]
-        return "".join(new_lines)
+        """Delegate to wrapper_patcher.apply_wrapper_patch."""
+        return self.wrapper_patcher.apply_wrapper_patch(
+            source_code=source_code,
+            block=block,
+            unified_module=unified_module,
+            unified_symbol=unified_symbol,
+            package_name=package_name,
+        )
 
     def _build_call_arguments(self, args: ast.arguments) -> str:
-        parts: List[str] = []
-        for a in getattr(args, "posonlyargs", []):
-            parts.append(a.arg)
-        for a in args.args:
-            parts.append(a.arg)
-        if args.vararg:
-            parts.append(f"*{args.vararg.arg}")
-        for a in args.kwonlyargs:
-            parts.append(f"{a.arg}={a.arg}")
-        if args.kwarg:
-            parts.append(f"**{args.kwarg.arg}")
-        return ", ".join(parts)
+        """Delegate to unified_symbol_generator.build_call_arguments."""
+        from .unified_symbol_generator import build_call_arguments
+        return build_call_arguments(args)
 
     # ---------------------------------------------------------------------
     # apply_assisted UPDATE_IMPORTS: from-import only, skip if comments
@@ -939,326 +771,108 @@ class DecompositionAnalyzer:
         patch_root: Path,
         backups: List[Tuple[Path, Path]],
     ) -> Tuple[List[Path], List[str]]:
-        changed: List[Path] = []
-        warnings: List[str] = []
-
-        unified_mod_dotted = f"{package_name}.{self._module_dotted_from_target_module(plan.target_module)}"
-        unified_symbol = plan.target_symbol
-
-        for bid in (getattr(step, "source_blocks", None) or []):
-            b = functional_map.blocks.get(bid)
-            if not b:
-                continue
-            if b.is_method:
-                warnings.append(f"{step.id}: UPDATE_IMPORTS skip method {b.qualname}")
-                continue
-
-            orig_mod = self._qualify_module(b.module, package_name)
-            orig_name = b.method_name
-
-            for f in self._iter_python_files(package_root):
-                src = self._read_text(f, bom=True)
-                try:
-                    tree = ast.parse(src, filename=str(f))
-                except SyntaxError:
-                    continue
-
-                lines = src.splitlines(True)
-                file_mod = self._file_module_name(f, package_root, package_name)
-                edits: List[Tuple[int, int, str]] = []
-
-                for n in tree.body:
-                    if not isinstance(n, ast.ImportFrom):
-                        continue
-
-                    abs_mod = self._resolve_importfrom_abs_module(n, file_mod)
-                    abs_mod = self._qualify_module(abs_mod, package_name) if abs_mod else abs_mod
-                    if abs_mod != orig_mod:
-                        continue
-
-                    seg = self._slice_lines(src, n.lineno, n.end_lineno or n.lineno)
-                    if self._segment_has_comment(seg):
-                        warnings.append(f"{f.name}:{n.lineno}: skipped import rewrite due to comments")
-                        continue
-
-                    moved: List[ast.alias] = []
-                    remaining: List[ast.alias] = []
-                    for a in n.names:
-                        if a.name == orig_name:
-                            moved.append(a)
-                        else:
-                            remaining.append(a)
-                    if not moved:
-                        continue
-
-                    indent = re.match(r"\s*", lines[n.lineno - 1]).group(0) if lines else ""
-                    repl: List[str] = []
-
-                    if remaining:
-                        repl.append(indent + self._format_importfrom(n.module, remaining, int(n.level or 0)) + "\n")
-
-                    for a in moved:
-                        local = a.asname or a.name
-                        if local != unified_symbol:
-                            repl.append(indent + f"from {unified_mod_dotted} import {unified_symbol} as {local}\n")
-                        else:
-                            repl.append(indent + f"from {unified_mod_dotted} import {unified_symbol}\n")
-
-                    start = n.lineno - 1
-                    end = (n.end_lineno or n.lineno)
-                    edits.append((start, end, "".join(repl)))
-
-                if not edits:
-                    continue
-
-                new_lines = lines[:]
-                for start, end, text in sorted(edits, key=lambda x: x[0], reverse=True):
-                    new_lines[start:end] = [text]
-                new_src = "".join(new_lines)
-
-                if new_src == src:
-                    continue
-
-                bkp = self._backup_file(f, backup_root, package_root)
-                backups.append((f, bkp))
-
-                self._write_text(f, new_src)
-
-                patch_path = patch_root / f"{plan.cluster_id}_{step.id}_UPDATE_IMPORTS_{f.name}.patch"
-                self._write_patch(patch_path, src, new_src, str(f))
-                changed.append(f)
-
-        if not changed:
-            warnings.append(f"{getattr(step, 'id', 'UPDATE_IMPORTS')}: no import sites updated")
-
-        return changed, warnings
+        """Delegate to import_updater.apply_update_imports_assisted."""
+        return self.import_updater.apply_update_imports_assisted(
+            step=step,
+            plan=plan,
+            functional_map=functional_map,
+            package_root=package_root,
+            package_name=package_name,
+            backup_root=backup_root,
+            patch_root=patch_root,
+            backups=backups,
+            module_dotted_from_target_module_fn=self._module_dotted_from_target_module,
+            qualify_module_fn=self._qualify_module,
+        )
 
     def _segment_has_comment(self, segment: str) -> bool:
-        try:
-            tok = tokenize.generate_tokens(io.StringIO(segment).readline)
-            return any(t.type == tokenize.COMMENT for t in tok)
-        except Exception:
-            return "#" in segment
+        """Delegate to import_updater._segment_has_comment."""
+        return self.import_updater._segment_has_comment(segment)
 
     # ---------------------------------------------------------------------
     # Path / files / caches / validation
     # ---------------------------------------------------------------------
 
     def _detect_package_root(self, project_root: Path) -> Tuple[Path, str]:
-        if (project_root / "__init__.py").exists():
-            return project_root, project_root.name
-
-        for root_name in (self.config.project_package_roots or []):
-            cand = project_root / root_name
-            if (cand / "__init__.py").exists():
-                return cand, cand.name
-
-        return project_root, project_root.name
+        """Delegate to file_ops.detect_package_root."""
+        return self.file_ops.detect_package_root(project_root)
 
     def _ensure_package_files(self, target_file: Path, *, package_root: Path) -> None:
-        target_file.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            rel = target_file.resolve().relative_to(package_root.resolve())
-        except Exception:
-            return
-
-        cur = package_root.resolve()
-        for part in rel.parts[:-1]:
-            cur = cur / part
-            init_py = cur / "__init__.py"
-            if not init_py.exists():
-                init_py.write_text('"""Auto-generated package."""\n', encoding="utf-8")
+        """Delegate to file_ops.ensure_package_files."""
+        self.file_ops.ensure_package_files(target_file, package_root=package_root)
 
     def _resolve_target_module_path(self, *, package_root: Path, target_module: str) -> Path:
-        rel = Path(target_module)
-        if rel.is_absolute():
-            return rel
-        return (package_root / rel).resolve()
+        """Delegate to file_ops.resolve_target_module_path."""
+        return self.file_ops.resolve_target_module_path(package_root=package_root, target_module=target_module)
 
     def _resolve_block_file_path(self, block: FunctionalBlock, package_root: Path) -> Path:
-        p = Path(block.file_path)
-        return p if p.is_absolute() else (package_root / p).resolve()
+        """Delegate to file_ops.resolve_block_file_path."""
+        return self.file_ops.resolve_block_file_path(block, package_root)
 
     def _backup_file(self, file_path: Path, backup_root: Path, package_root: Path) -> Path:
-        file_path = file_path.resolve()
-        package_root = package_root.resolve()
-        try:
-            rel = file_path.relative_to(package_root)
-            dest = backup_root / rel
-        except Exception:
-            dest = backup_root / file_path.name
-
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(file_path, dest)
-        return dest
+        """Delegate to file_ops.backup_file."""
+        return self.file_ops.backup_file(file_path, backup_root, package_root)
 
     def _rollback(self, *, backups: List[Tuple[Path, Path]], created_files: List[Path]) -> None:
-        self.logger.warning("Rollback started: restoring backups and removing created files...")
-        for orig, bkp in reversed(backups):
-            try:
-                if bkp.exists():
-                    orig.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(bkp, orig)
-            except Exception as e:
-                self.logger.error("Rollback restore failed for %s: %s", orig, e)
-
-        for f in reversed(created_files):
-            try:
-                if f.exists():
-                    f.unlink()
-            except Exception as e:
-                self.logger.error("Rollback delete failed for %s: %s", f, e)
+        """Delegate to file_ops.rollback."""
+        self.file_ops.rollback(backups=backups, created_files=created_files)
 
     def _write_patch(self, patch_path: Path, old: str, new: str, file_label: str) -> None:
-        patch_path.parent.mkdir(parents=True, exist_ok=True)
-        diff = difflib.unified_diff(
-            old.splitlines(True),
-            new.splitlines(True),
-            fromfile=f"{file_label}.orig",
-            tofile=f"{file_label}.new",
-            lineterm="",
-        )
-        patch_path.write_text("".join(diff), encoding="utf-8")
+        """Delegate to file_ops.write_patch."""
+        self.file_ops.write_patch(patch_path, old, new, file_label)
 
     def _validate_files(self, files: List[Path]) -> None:
-        for f in files:
-            code = self._read_text(f, bom=True)
-            ast.parse(code, filename=str(f))
-            py_compile.compile(str(f), doraise=True)
+        """Delegate to file_ops.validate_files."""
+        self.file_ops.validate_files(files, validate_unified_aliases_fn=self._validate_unified_import_aliases)
+
+    def _validate_unified_import_aliases(self, *, file_path: Path, code: str) -> None:
+        """Delegate to alias_validator.validate_unified_import_aliases."""
+        self.alias_validator.validate_unified_import_aliases(file_path=file_path, code=code)
 
     def _read_text(self, path: Path, bom: bool = False) -> str:
-        path = path.resolve()
-        if path in self._file_text_cache:
-            return self._file_text_cache[path]
-        enc = "utf-8-sig" if bom else "utf-8"
-        text = path.read_text(encoding=enc) if path.exists() else ""
-        self._file_text_cache[path] = text
-        return text
+        """Delegate to file_ops.read_text."""
+        return self.file_ops.read_text(path, bom)
 
     def _write_text(self, path: Path, content: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        self._file_text_cache.pop(path.resolve(), None)
-        self._file_ast_cache.pop(path.resolve(), None)
+        """Delegate to file_ops.write_text."""
+        self.file_ops.write_text(path, content)
 
     def _parse_file(self, path: Path) -> ast.Module:
-        path = path.resolve()
-        if path in self._file_ast_cache:
-            return self._file_ast_cache[path]
-        txt = self._read_text(path, bom=True)
-        tree = ast.parse(txt, filename=str(path))
-        self._file_ast_cache[path] = tree
-        return tree
+        """Delegate to file_ops.parse_file."""
+        return self.file_ops.parse_file(path)
 
     def _slice_lines(self, src: str, lineno: int, end_lineno: int) -> str:
-        lines = src.splitlines(True)
-        a = max(1, int(lineno))
-        b = max(a, int(end_lineno))
-        return "".join(lines[a - 1 : b])
+        """Delegate to file_ops.slice_lines."""
+        return self.file_ops.slice_lines(src, lineno, end_lineno)
 
     # ---------------------------------------------------------------------
     # AST lookup & decorators
     # ---------------------------------------------------------------------
 
     def _find_def_node(self, tree: ast.AST, qualname: str, lineno: Optional[int] = None) -> ast.AST:
-        parts = qualname.split(".")
-        body = getattr(tree, "body", [])
-
-        def pick(cands: List[ast.AST]) -> Optional[ast.AST]:
-            if not cands:
-                return None
-            if lineno is None:
-                return cands[0]
-            exact = [n for n in cands if getattr(n, "lineno", None) == lineno]
-            if exact:
-                return exact[0]
-            return sorted(cands, key=lambda n: abs(int(getattr(n, "lineno", 10**9)) - int(lineno)))[0]
-
-        if len(parts) == 1:
-            name = parts[0]
-            cands = [n for n in body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name]
-            node = pick(cands)
-            if node:
-                return node
-            raise RuntimeError(f"Callable not found: {qualname}")
-
-        method = parts[-1]
-        class_chain = parts[:-1]
-
-        cur_body = body
-        for cls_name in class_chain:
-            cls_candidates = [n for n in cur_body if isinstance(n, ast.ClassDef) and n.name == cls_name]
-            if not cls_candidates:
-                raise RuntimeError(f"Class not found in qualname: {qualname}")
-            cur_body = cls_candidates[0].body
-
-        cands = [n for n in cur_body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == method]
-        node = pick(cands)
-        if node:
-            return node
-        raise RuntimeError(f"Callable not found: {qualname}")
+        """Delegate to ast_utils.find_def_node."""
+        return ast_utils.find_def_node(tree, qualname, lineno)
 
     def _decorator_name(self, d: ast.AST) -> str:
-        if isinstance(d, ast.Name):
-            return d.id
-        if isinstance(d, ast.Attribute):
-            left = ast.unparse(d.value) if hasattr(ast, "unparse") else ""
-            return f"{left}.{d.attr}" if left else d.attr
-        return ""
+        """Delegate to ast_utils.get_decorator_name."""
+        return ast_utils.get_decorator_name(d)
 
     def _decorator_kind(self, fn: ast.AST) -> str:
-        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            return ""
-        names = [self._decorator_name(d) for d in (fn.decorator_list or [])]
-        for k in ("classmethod", "staticmethod", "property", "cached_property", "functools.cached_property"):
-            if k in names:
-                return k
-        return ""
+        """Delegate to ast_utils.get_decorator_kind."""
+        return ast_utils.get_decorator_kind(fn)
 
     def _detect_async_def(self, file_path: Path, qualname: str, lineno: int) -> bool:
+        """Detect if a function is async."""
         try:
-            tree = self._parse_file(file_path)
-            node = self._find_def_node(tree, qualname, lineno=lineno)
+            tree = self.file_ops.parse_file(file_path)
+            node = ast_utils.find_def_node(tree, qualname, lineno=lineno)
             return isinstance(node, ast.AsyncFunctionDef)
         except Exception:
             return False
 
     def _free_names(self, fn: ast.AST) -> Set[str]:
-        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            return set()
-
-        params: Set[str] = set()
-        for a in getattr(fn.args, "posonlyargs", []):
-            params.add(a.arg)
-        for a in fn.args.args:
-            params.add(a.arg)
-        for a in fn.args.kwonlyargs:
-            params.add(a.arg)
-        if fn.args.vararg:
-            params.add(fn.args.vararg.arg)
-        if fn.args.kwarg:
-            params.add(fn.args.kwarg.arg)
-
-        loads: Set[str] = set()
-        stores: Set[str] = set()
-
-        class V(ast.NodeVisitor):
-            def visit_FunctionDef(self, node): return
-            def visit_AsyncFunctionDef(self, node): return
-            def visit_ClassDef(self, node): return
-            def visit_Lambda(self, node): return
-            def visit_Name(self, node: ast.Name):
-                if isinstance(node.ctx, ast.Load):
-                    loads.add(node.id)
-                elif isinstance(node.ctx, (ast.Store, ast.Del)):
-                    stores.add(node.id)
-
-        v = V()
-        for stmt in fn.body:
-            v.visit(stmt)
-
-        locals_ = params | stores
-        return {n for n in loads if n not in locals_}
+        """Delegate to ast_utils.collect_free_names."""
+        return ast_utils.collect_free_names(fn)
 
     # ---------------------------------------------------------------------
     # UPDATE_IMPORTS helpers
@@ -1306,10 +920,8 @@ class DecompositionAnalyzer:
     # ---------------------------------------------------------------------
 
     def _module_dotted_from_target_module(self, target_module: str) -> str:
-        s = target_module.replace("\\", "/").strip()
-        if s.endswith(".py"):
-            s = s[:-3]
-        return ".".join([p for p in s.split("/") if p])
+        """Delegate to wrapper_patcher._module_dotted_from_target_module."""
+        return self.wrapper_patcher._module_dotted_from_target_module(target_module)
 
     def _module_dotted_from_filepath(self, file_path: Path, package_root: Path, package_name: str) -> str:
         rel = file_path.resolve().relative_to(package_root.resolve()).as_posix()
@@ -1330,94 +942,24 @@ class DecompositionAnalyzer:
     # ---------------------------------------------------------------------
 
     def _generate_statistics(self) -> Dict[str, Any]:
+        """Delegate to stats_gen.generate_statistics."""
         if not self._functional_map:
             return {}
-
-        category_counts: Dict[str, int] = {}
-        for block in self._functional_map.blocks.values():
-            key = f"{block.category}:{block.subcategory}"
-            category_counts[key] = category_counts.get(key, 0) + 1
-
-        cluster_stats = {
-            "merge_candidates": sum(1 for c in self._clusters if c.recommendation == RecommendationType.MERGE),
-            "extract_base_candidates": sum(1 for c in self._clusters if c.recommendation == RecommendationType.EXTRACT_BASE),
-            "wrap_only_candidates": sum(1 for c in self._clusters if c.recommendation == RecommendationType.WRAP_ONLY),
-            "keep_separate": sum(1 for c in self._clusters if c.recommendation == RecommendationType.KEEP_SEPARATE),
-        }
-
-        risk_stats = {
-            "low_risk": sum(1 for c in self._clusters if c.risk_level.value == "LOW"),
-            "medium_risk": sum(1 for c in self._clusters if c.risk_level.value == "MEDIUM"),
-            "high_risk": sum(1 for c in self._clusters if c.risk_level.value == "HIGH"),
-        }
-
-        return {
-            "total_blocks": self._functional_map.total_blocks,
-            "total_capabilities": self._functional_map.total_capabilities,
-            "total_clusters": self._functional_map.total_clusters,
-            "resolution_rate": self._functional_map.resolution_rate,
-            "resolution_rate_internal": self._functional_map.resolution_rate_internal,
-            "resolution_rate_actionable": self._functional_map.resolution_rate_actionable,
-            "external_calls_count": self._functional_map.external_calls_count,
-            "dynamic_attribute_calls_count": self._functional_map.dynamic_attribute_calls_count,
-            "category_distribution": category_counts,
-            "cluster_recommendations": cluster_stats,
-            "risk_distribution": risk_stats,
-            "total_plans": len(self._plans),
-        }
+        return self.stats_gen.generate_statistics(
+            self._functional_map,
+            self._clusters,
+            self._plans
+        )
 
     def _generate_recommendations(self) -> List[str]:
+        """Delegate to stats_gen.generate_recommendations."""
         if not self._functional_map:
             return ["Run analysis first to get recommendations"]
-
-        recommendations: List[str] = []
-
-        if self._clusters:
-            high_priority = [c for c in self._clusters if c.risk_level.value == "LOW" and c.avg_similarity >= 0.8]
-            if high_priority:
-                recommendations.append(f"Found {len(high_priority)} high-priority, low-risk consolidation opportunities")
-
-        complex_blocks = [b for b in self._functional_map.blocks.values() if b.cyclomatic > 15]
-        if complex_blocks:
-            recommendations.append(f"Consider refactoring {len(complex_blocks)} highly complex blocks (complexity > 15)")
-
-        if self._clusters:
-            category_clusters: Dict[str, int] = {}
-            for cluster in self._clusters:
-                key = f"{cluster.category}:{cluster.subcategory}"
-                category_clusters[key] = category_clusters.get(key, 0) + 1
-            problematic = [k for k, cnt in category_clusters.items() if cnt >= 3]
-            if problematic:
-                recommendations.append(f"Focus on categories with most duplication: {', '.join(problematic[:3])}")
-
-        internal_rate = getattr(self._functional_map, "resolution_rate_internal", self._functional_map.resolution_rate)
-        actionable_rate = getattr(self._functional_map, "resolution_rate_actionable", internal_rate)
-        external_count = getattr(self._functional_map, "external_calls_count", 0)
-        dynamic_count = getattr(self._functional_map, "dynamic_attribute_calls_count", 0)
-
-        recommendations.append(
-            f"Call resolution: {actionable_rate:.1%} actionable, {internal_rate:.1%} internal. "
-            f"External calls: {external_count}, Dynamic attribute calls: {dynamic_count}"
+        return self.stats_gen.generate_recommendations(
+            self._functional_map,
+            self._clusters
         )
-        return recommendations
 
     def _calculate_cluster_benefit(self, cluster: SimilarityCluster) -> float:
-        benefit = 0.0
-        benefit += len(cluster.blocks) * 2
-        benefit += cluster.avg_similarity * 10
-
-        if cluster.recommendation == RecommendationType.MERGE:
-            benefit += 5
-        elif cluster.recommendation == RecommendationType.EXTRACT_BASE:
-            benefit += 3
-        elif cluster.recommendation == RecommendationType.WRAP_ONLY:
-            benefit += 1
-
-        if cluster.risk_level.value == "LOW":
-            benefit += 3
-        elif cluster.risk_level.value == "MEDIUM":
-            benefit += 1
-
-        effort_bonus = {"XS": 5, "S": 4, "M": 2, "L": 1, "XL": 0}
-        benefit += effort_bonus.get(cluster.effort_class.value, 0)
-        return benefit
+        """Delegate to stats_gen.calculate_cluster_benefit."""
+        return self.stats_gen.calculate_cluster_benefit(cluster)

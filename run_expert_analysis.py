@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
-Direct runner for expert analysis to avoid import issues.
+Direct runner for expert analysis - Thin wrapper for intellirefactor.run_expert_analysis_here
 
 Usage:
     python run_expert_analysis.py <project_path> <target_file> [--detailed]
 """
 
-import sys
-import os
-from pathlib import Path
+import warnings
+from intellirefactor.run_expert_analysis_here import main
 
-# Add project root to Python path
-project_root = Path(__file__).parent
-sys.path.insert(0, str(project_root))
+warnings.warn(
+    "run_expert_analysis.py is deprecated; use intellirefactor.run_expert_analysis_here",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+if __name__ == "__main__":
+    main()
 
 def main():
     """Run expert analysis directly."""
@@ -48,7 +52,7 @@ def main():
         output_dir = Path("./expert_analysis_output")
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        print(f"🔍 Starting expert refactoring analysis...")
+        print("🔍 Starting expert refactoring analysis...")
         print(f"📁 Project: {project_path}")
         print(f"🎯 Target: {target_file}")
         print(f"📊 Output: {output_dir}")

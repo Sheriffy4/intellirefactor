@@ -15,8 +15,8 @@ from typing import Dict, List, Any
 from dataclasses import dataclass
 from datetime import datetime
 
-from ..analysis.file_analyzer import FileAnalyzer
-from ..analysis.project_analyzer import ProjectAnalyzer
+from ..analysis.refactor.file_analyzer import FileAnalyzer
+from ..analysis.refactor.project_analyzer import ProjectAnalyzer
 
 
 @dataclass

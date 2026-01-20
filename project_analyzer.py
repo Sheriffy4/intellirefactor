@@ -6,15 +6,10 @@ Project Analyzer - Анализатор проекта для рекоменда
 """
 
 import ast
-import json
-import os
-import re
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Set, Tuple
-from collections import defaultdict
+from typing import List
 from datetime import datetime
-import logging
 
 # Импорты из нашей системы знаний
 try:
@@ -398,7 +393,7 @@ class ProjectAnalyzer:
             report += f"- {rec}\n"
 
         if analysis.large_files:
-            report += f"""
+            report += """
 
 ## 📁 Большие файлы требующие внимания
 
@@ -407,7 +402,7 @@ class ProjectAnalyzer:
                 report += f"- `{file_path}`\n"
 
         if analysis.god_objects:
-            report += f"""
+            report += """
 
 ## ⚠️  God Objects (критический приоритет)
 
@@ -480,7 +475,7 @@ def main():
     analysis = analyzer.analyze_project(args.include, args.exclude)
 
     # Показать краткую сводку
-    print(f"\n📊 Результаты анализа:")
+    print("\n📊 Результаты анализа:")
     print(f"   📁 Всего файлов: {analysis.total_files}")
     print(f"   📝 Всего строк: {analysis.total_lines:,}")
     print(f"   🎯 Кандидатов на рефакторинг: {len(analysis.refactoring_candidates)}")

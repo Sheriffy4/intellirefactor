@@ -625,19 +625,25 @@ class DatabaseOptimizer:
         """
         optimized_queries = {
             "find_duplicates_by_fingerprint": """
-                SELECT s1.qualified_name, s1.file_id, s1.line_start, s1.line_end
-                FROM symbols s1
-                INNER JOIN symbols s2 ON s1.ast_fingerprint = s2.ast_fingerprint 
-                WHERE s1.symbol_id != s2.symbol_id 
-                AND s1.ast_fingerprint IS NOT NULL
-                ORDER BY s1.ast_fingerprint, s1.qualified_name
+                -- Optimized: avoid N^2 self-join; use GROUP BY + IN
+                SELECT s.qualified_name, s.file_id, s.line_start, s.line_end
+                FROM symbols s
+                WHERE s.ast_fingerprint IS NOT NULL AND s.ast_fingerprint != ''
+                  AND s.ast_fingerprint IN (
+                      SELECT ast_fingerprint
+                      FROM symbols
+                      WHERE ast_fingerprint IS NOT NULL AND ast_fingerprint != ''
+                      GROUP BY ast_fingerprint
+                      HAVING COUNT(*) > 1
+                  )
+                ORDER BY s.ast_fingerprint, s.qualified_name
             """,
             "find_unused_symbols": """
                 SELECT s.qualified_name, s.file_id, s.kind
                 FROM symbols s
                 LEFT JOIN dependencies d ON s.symbol_id = d.target_symbol_id
                 WHERE d.target_symbol_id IS NULL 
-                AND s.is_private = 1
+                AND s.is_public = 0
                 AND s.kind IN ('method', 'function', 'class')
                 ORDER BY s.file_id, s.line_start
             """,
@@ -653,22 +659,24 @@ class DatabaseOptimizer:
                 ORDER BY method_count DESC
             """,
             "find_complex_methods": """
-                SELECT qualified_name, file_id, line_start, cyclomatic_complexity
+                SELECT qualified_name, file_id, line_start, complexity_score
                 FROM symbols
                 WHERE kind = 'method' 
-                AND cyclomatic_complexity > 10
-                ORDER BY cyclomatic_complexity DESC
+                AND complexity_score > 10
+                ORDER BY complexity_score DESC
             """,
             "find_similar_blocks": """
-                SELECT b1.symbol_id, b2.symbol_id, b1.block_fingerprint
+                SELECT b1.symbol_id, b2.symbol_id, b1.normalized_fingerprint
                 FROM blocks b1
-                INNER JOIN blocks b2 ON b1.block_fingerprint = b2.block_fingerprint
+                INNER JOIN blocks b2 ON b1.normalized_fingerprint = b2.normalized_fingerprint
                 WHERE b1.block_id != b2.block_id
-                AND b1.loc >= 3
-                ORDER BY b1.block_fingerprint
+                  AND b1.normalized_fingerprint IS NOT NULL
+                  AND b1.normalized_fingerprint != ''
+                  AND b1.lines_of_code >= 3
+                ORDER BY b1.normalized_fingerprint
             """,
             "get_file_analysis_summary": """
-                SELECT f.path, f.loc, 
+                SELECT f.file_path, f.lines_of_code, 
                        COUNT(DISTINCT s.symbol_id) as symbol_count,
                        COUNT(DISTINCT CASE WHEN p.severity = 'high' THEN p.problem_id END) as high_problems,
                        COUNT(DISTINCT CASE WHEN p.severity = 'medium' THEN p.problem_id END) as medium_problems
@@ -676,15 +684,19 @@ class DatabaseOptimizer:
                 LEFT JOIN symbols s ON f.file_id = s.file_id
                 LEFT JOIN problems p ON s.symbol_id = p.symbol_id
                 WHERE f.file_id = ?
-                GROUP BY f.file_id, f.path, f.loc
+                GROUP BY f.file_id, f.file_path, f.lines_of_code
             """,
             "get_dependency_graph": """
-                SELECT s1.qualified_name as source, s2.qualified_name as target, d.kind, d.count
+                SELECT
+                    s1.qualified_name as source,
+                    s2.qualified_name as target,
+                    d.dependency_kind,
+                    COALESCE(d.usage_count, 1) as usage_count
                 FROM dependencies d
                 INNER JOIN symbols s1 ON d.source_symbol_id = s1.symbol_id
                 INNER JOIN symbols s2 ON d.target_symbol_id = s2.symbol_id
-                WHERE d.kind IN ('calls', 'inherits', 'imports')
-                ORDER BY s1.qualified_name, d.kind, d.count DESC
+                WHERE d.dependency_kind IN ('calls', 'inherits', 'imports')
+                ORDER BY s1.qualified_name, d.dependency_kind, usage_count DESC
             """,
         }
 
@@ -706,17 +718,17 @@ class DatabaseOptimizer:
         # View for file statistics
         file_stats_sql = """
             CREATE TABLE IF NOT EXISTS file_stats AS
-            SELECT f.file_id, f.path, f.loc,
+            SELECT f.file_id, f.file_path, f.lines_of_code,
                    COUNT(DISTINCT s.symbol_id) as symbol_count,
                    COUNT(DISTINCT CASE WHEN s.kind = 'class' THEN s.symbol_id END) as class_count,
                    COUNT(DISTINCT CASE WHEN s.kind = 'method' THEN s.symbol_id END) as method_count,
                    COUNT(DISTINCT CASE WHEN s.kind = 'function' THEN s.symbol_id END) as function_count,
-                   AVG(CASE WHEN s.cyclomatic_complexity > 0 THEN s.cyclomatic_complexity END) as avg_complexity,
+                   AVG(CASE WHEN s.complexity_score > 0 THEN s.complexity_score END) as avg_complexity,
                    COUNT(DISTINCT p.problem_id) as problem_count
             FROM files f
             LEFT JOIN symbols s ON f.file_id = s.file_id
             LEFT JOIN problems p ON s.symbol_id = p.symbol_id
-            GROUP BY f.file_id, f.path, f.loc
+            GROUP BY f.file_id, f.file_path, f.lines_of_code
         """
 
         # View for symbol relationships
@@ -784,17 +796,17 @@ class DatabaseOptimizer:
                     self.connection.execute(
                         """
                         CREATE TABLE file_stats AS
-                        SELECT f.file_id, f.path, f.loc,
+                        SELECT f.file_id, f.file_path, f.lines_of_code,
                                COUNT(DISTINCT s.symbol_id) as symbol_count,
                                COUNT(DISTINCT CASE WHEN s.kind = 'class' THEN s.symbol_id END) as class_count,
                                COUNT(DISTINCT CASE WHEN s.kind = 'method' THEN s.symbol_id END) as method_count,
                                COUNT(DISTINCT CASE WHEN s.kind = 'function' THEN s.symbol_id END) as function_count,
-                               AVG(CASE WHEN s.cyclomatic_complexity > 0 THEN s.cyclomatic_complexity END) as avg_complexity,
+                               AVG(CASE WHEN s.complexity_score > 0 THEN s.complexity_score END) as avg_complexity,
                                COUNT(DISTINCT p.problem_id) as problem_count
                         FROM files f
                         LEFT JOIN symbols s ON f.file_id = s.file_id
                         LEFT JOIN problems p ON s.symbol_id = p.symbol_id
-                        GROUP BY f.file_id, f.path, f.loc
+                        GROUP BY f.file_id, f.file_path, f.lines_of_code
                     """
                     )
                 elif view_name == "symbol_relationships":

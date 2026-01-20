@@ -7,7 +7,6 @@ Knowledge Base Manager
 """
 
 import json
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any
@@ -143,7 +142,7 @@ class KnowledgeManager:
         with open(self.index_file, "r", encoding="utf-8") as f:
             index = json.load(f)
 
-        print(f"📚 База знаний рефакторинга")
+        print("📚 База знаний рефакторинга")
         print(f"📅 Последнее обновление: {index['last_updated']}")
         print(f"📊 Всего проектов: {index['total_refactoring_projects']}")
         print()
@@ -158,7 +157,7 @@ class KnowledgeManager:
                 print()
 
         stats = index["statistics"]
-        print(f"📈 Общая статистика:")
+        print("📈 Общая статистика:")
         print(f"   🔧 Правил трансформации: {stats['total_transformation_rules']}")
         print(f"   💉 DI паттернов: {stats['total_di_patterns']}")
         print(f"   🎭 Шаблонов интерфейсов: {stats['total_interface_templates']}")

@@ -49,7 +49,9 @@ class InterfaceGenerator:
     """
 
     @staticmethod
-    def generate_interface(component_name: str, methods: Sequence[cst.FunctionDef]) -> str:
+    def generate_interface(
+        component_name: str, methods: Sequence[cst.FunctionDef]
+    ) -> str:
         """
         Build a Protocol interface for extracted methods.
 
@@ -64,11 +66,7 @@ class InterfaceGenerator:
 
         for method in methods:
             stub_body = cst.IndentedBlock(
-                body=[
-                    cst.SimpleStatementLine(
-                        body=[cst.Expr(value=cst.Ellipsis())]
-                    )
-                ]
+                body=[cst.SimpleStatementLine(body=[cst.Expr(value=cst.Ellipsis())])]
             )
 
             # Keep decorators that affect call style (staticmethod/classmethod/property),
@@ -82,7 +80,9 @@ class InterfaceGenerator:
             # LibCST expects EmptyLine nodes here (not raw Comment nodes).
             leading_lines=[
                 cst.EmptyLine(),
-                cst.EmptyLine(comment=cst.Comment("# Auto-generated interface by IntelliRefactor")),
+                cst.EmptyLine(
+                    comment=cst.Comment("# Auto-generated interface by IntelliRefactor")
+                ),
             ],
         )
 
@@ -113,7 +113,9 @@ class ExtractedMethodsResult:
     extracted_nodes: List[cst.FunctionDef]
 
 
-def safe_extract_methods(source_code: str, methods_to_extract: Sequence[str]) -> ExtractedMethodsResult:
+def safe_extract_methods(
+    source_code: str, methods_to_extract: Sequence[str]
+) -> ExtractedMethodsResult:
     """
     Safely extract methods preserving comments and formatting.
 

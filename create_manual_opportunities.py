@@ -177,7 +177,7 @@ def main():
     opportunities_file = create_attack_dispatcher_opportunities()
     success = test_apply_opportunities(opportunities_file)
     
-    print(f"\n=== Результат ===")
+    print("\n=== Результат ===")
     if success:
         print("🎉 Ручные возможности рефакторинга работают!")
     else:

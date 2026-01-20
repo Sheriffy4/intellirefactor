@@ -82,12 +82,20 @@ class RichOutputManager:
         else:
             self.console.print(f"✓ {message}")
 
+    def success(self, message: str) -> None:
+        """Alias for print_success for CLI compatibility."""
+        self.print_success(message)
+
     def print_warning(self, message: str) -> None:
         """Print a warning message."""
         if self.use_rich:
             self.console.print(f"[yellow]⚠[/yellow] {message}")
         else:
             self.console.print(f"⚠ {message}")
+
+    def warning(self, message: str) -> None:
+        """Alias for print_warning for CLI compatibility."""
+        self.print_warning(message)
 
     def print_error(self, message: str) -> None:
         """Print an error message."""
@@ -96,12 +104,20 @@ class RichOutputManager:
         else:
             self.console.print(f"✗ {message}")
 
+    def error(self, message: str) -> None:
+        """Alias for print_error for CLI compatibility."""
+        self.print_error(message)
+
     def print_info(self, message: str) -> None:
         """Print an info message."""
         if self.use_rich:
             self.console.print(f"[blue]ℹ[/blue] {message}")
         else:
             self.console.print(f"ℹ {message}")
+
+    def info(self, message: str) -> None:
+        """Alias for print_info for CLI compatibility."""
+        self.print_info(message)
 
     def create_table(self, title: str, columns: List[str]) -> "Table":
         """Create a rich table."""
@@ -296,6 +312,10 @@ class RichOutputManager:
         else:
             self.console.print(f"{message}...")
             return {"message": message}
+
+    def progress(self, message: str) -> Union["Status", Dict]:
+        """Alias for status for CLI compatibility."""
+        return self.status(message)
 
     def print_metrics_summary(self, metrics: Dict[str, Any]) -> None:
         """Print a formatted metrics summary."""

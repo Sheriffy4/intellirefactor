@@ -5,7 +5,6 @@
 """
 
 import shutil
-import os
 from pathlib import Path
 
 def update_documentation():

@@ -1,0 +1,128 @@
+{
+  "god_class_threshold": 5,
+  "min_methods_for_extraction": 3,
+  "extract_private_methods": true,
+  "cohesion_cluster_other": true,
+  "cohesion_similarity_threshold": 0.25,
+  "responsibility_keywords": {
+    "attackorchestrator": [
+      "empty",
+      "payload",
+      "reordering",
+      "attack",
+      "fake",
+      "logger",
+      "completed",
+      "dispatchererror",
+      "success",
+      "generate"
+    ],
+    "tlsprotocol": [
+      "payload",
+      "logger",
+      "position",
+      "name",
+      "data",
+      "debug",
+      "valid",
+      "find",
+      "domain",
+      "clienthello"
+    ],
+    "attackexecutor": [
+      "single",
+      "entry",
+      "payload",
+      "enable",
+      "metadata",
+      "attacknotfounderror",
+      "setattr",
+      "attack",
+      "logger",
+      "port"
+    ]
+  },
+  "enhanced_refactoring": {
+    "total_methods_analyzed": 48,
+    "proposed_components": 3,
+    "expected_extraction_rate": 0.3958333333333333,
+    "component_plans": [
+      {
+        "name": "AttackOrchestrator",
+        "description": "Оркестрация и маршрутизация атак",
+        "methods": [
+          "dispatch_attack",
+          "_dispatch_internal",
+          "_dispatch_combination_wrapper",
+          "_dispatch_combination",
+          "_log_dispatch_start",
+          "_log_dispatch_success"
+        ],
+        "interface_methods": [
+          "dispatch_attack"
+        ],
+        "estimated_lines": 198,
+        "cohesion_score": 0.10456989247311828,
+        "dependencies": [
+          "_is_strategy_string",
+          "_apply_disorder_reordering",
+          "_is_combination_attack",
+          "_dispatch_strategy",
+          "_dispatch_single_attack",
+          "_log_operations_for_validation",
+          "_dispatch_integrated_combo",
+          "_log_segment_details",
+          "_log_dispatch_error",
+          "_generate_correlation_id",
+          "_filter_params_for_attack"
+        ]
+      },
+      {
+        "name": "TlsProtocolHandler",
+        "description": "Обработка TLS протокола и SNI",
+        "methods": [
+          "_parse_sni_extension",
+          "_find_hostname_offset_in_payload",
+          "_legacy_parse_sni_extension",
+          "_is_valid_hostname",
+          "_find_sni_position",
+          "_extract_domain_from_sni"
+        ],
+        "interface_methods": [],
+        "estimated_lines": 198,
+        "cohesion_score": 0.1279874213836478,
+        "dependencies": []
+      },
+      {
+        "name": "AttackExecutor",
+        "description": "Выполнение атак и техник",
+        "methods": [
+          "_is_combination_attack",
+          "_dispatch_single_attack",
+          "_execute_primitive_attack",
+          "_create_attack_context",
+          "_use_advanced_attack",
+          "get_attack_info",
+          "list_available_attacks"
+        ],
+        "interface_methods": [
+          "get_attack_info",
+          "list_available_attacks"
+        ],
+        "estimated_lines": 267,
+        "cohesion_score": 0.13614718614718613,
+        "dependencies": [
+          "_dispatch_combination",
+          "_log_dispatch_success",
+          "_log_operations_for_validation",
+          "_log_segment_details",
+          "_normalize_parameters",
+          "_map_recipe_parameters",
+          "_resolve_recipe_name",
+          "_resolve_parameters",
+          "_normalize_attack_type"
+        ]
+      }
+    ]
+  }
+}

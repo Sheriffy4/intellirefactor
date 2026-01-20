@@ -271,25 +271,25 @@ def main():
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(final_report, f, ensure_ascii=False, indent=2)
         
-        print(f"\n🎉 Final enhanced refactoring report created!")
+        print("\n🎉 Final enhanced refactoring report created!")
         print(f"📊 Expert assessment score: {final_report['expert_assessment']['overall_score']:.1f}/10.0")
         print(f"📁 Report saved to: {output_file}")
         
         # Показываем статус по 7 пунктам эксперта
-        print(f"\n📋 Expert requirements status:")
+        print("\n📋 Expert requirements status:")
         for req, status in final_report['expert_assessment']['expert_requirements_status'].items():
             emoji = "✅" if status == "ACHIEVED" else "🔶" if status == "PARTIAL" else "❌"
             print(f"  {emoji} {req}: {status}")
         
         # Показываем что достигнуто
         if final_report['expert_assessment']['achieved_improvements']:
-            print(f"\n🚀 Achieved improvements:")
+            print("\n🚀 Achieved improvements:")
             for improvement in final_report['expert_assessment']['achieved_improvements']:
                 print(f"  • {improvement}")
         
         # Показываем что еще нужно для 10/10
         if final_report['expert_assessment']['missing_for_10_10']:
-            print(f"\n🎯 Missing for 10/10:")
+            print("\n🎯 Missing for 10/10:")
             for missing in final_report['expert_assessment']['missing_for_10_10']:
                 print(f"  • {missing}")
         

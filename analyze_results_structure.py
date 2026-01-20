@@ -5,10 +5,7 @@
 Анализирует созданные файлы и предлагает улучшения структуры.
 """
 
-import os
-import json
 from pathlib import Path
-from datetime import datetime
 
 
 def analyze_results_directory(results_dir):
@@ -46,7 +43,7 @@ def analyze_results_directory(results_dir):
     # Сортируем по размеру
     all_files.sort(key=lambda x: x["size"], reverse=True)
 
-    print(f"📊 ОБЩАЯ СТАТИСТИКА:")
+    print("📊 ОБЩАЯ СТАТИСТИКА:")
     print(f"Всего файлов: {len(all_files)}")
     print(f"Общий размер: {total_size / (1024 * 1024):.1f} МБ")
     print()

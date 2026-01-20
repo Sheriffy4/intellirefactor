@@ -1,0 +1,46 @@
+Metadata-Version: 2.4
+Name: intellirefactor
+Version: 0.1.0
+Summary: Intelligent Project Analysis and Refactoring System
+Home-page: https://github.com/intellirefactor/intellirefactor
+Author: IntelliRefactor Team
+Author-email: contact@intellirefactor.dev
+Project-URL: Bug Reports, https://github.com/intellirefactor/intellirefactor/issues
+Project-URL: Source, https://github.com/intellirefactor/intellirefactor
+Project-URL: Documentation, https://intellirefactor.readthedocs.io/
+Keywords: refactoring,code-analysis,automation,code-quality,static-analysis,project-analysis,intelligent-refactoring,code-transformation
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: Topic :: Software Development :: Code Generators
+Classifier: Topic :: Software Development :: Quality Assurance
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.0.0; extra == "dev"
+Requires-Dist: pytest-benchmark>=4.0.0; extra == "dev"
+Requires-Dist: hypothesis>=6.0.0; extra == "dev"
+Requires-Dist: black>=22.0.0; extra == "dev"
+Requires-Dist: flake8>=5.0.0; extra == "dev"
+Requires-Dist: mypy>=1.0.0; extra == "dev"
+Provides-Extra: docs
+Requires-Dist: sphinx>=5.0.0; extra == "docs"
+Requires-Dist: sphinx-rtd-theme>=1.0.0; extra == "docs"
+Requires-Dist: myst-parser>=0.18.0; extra == "docs"
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: keywords
+Dynamic: project-url
+Dynamic: provides-extra
+Dynamic: requires-python
+Dynamic: summary

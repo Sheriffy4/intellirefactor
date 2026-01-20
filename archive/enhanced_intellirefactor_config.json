@@ -1,0 +1,177 @@
+{
+  "analysis": {
+    "max_file_size": 2097152,
+    "excluded_patterns": [
+      "*.pyc",
+      "__pycache__",
+      ".git",
+      ".venv",
+      "venv"
+    ],
+    "metrics_thresholds": {
+      "cyclomatic_complexity": 8.0,
+      "maintainability_index": 15.0,
+      "lines_of_code": 300
+    },
+    "analysis_depth": 15,
+    "god_object_threshold": 5,
+    "min_candidate_size": 50
+  },
+  "refactoring": {
+    "safety_level": "moderate",
+    "auto_apply": false,
+    "backup_enabled": true,
+    "validation_required": true,
+    "max_operations_per_session": 100,
+    "god_class_threshold": 5,
+    "min_methods_for_extraction": 2,
+    "extract_private_methods": true,
+    "extract_decorated_public_methods": true,
+    "keep_private_methods_in_facade": false,
+    "skip_methods_with_module_level_deps": false,
+    "skip_methods_with_bare_self_usage": false,
+    "skip_methods_with_dangerous_patterns": false,
+    "cohesion_cluster_other": true,
+    "cohesion_similarity_threshold": 0.15,
+    "responsibility_keywords": {
+      "orchestration": [
+        "dispatch",
+        "orchestrat",
+        "coordinate",
+        "route",
+        "execute",
+        "internal",
+        "wrapper",
+        "main",
+        "primary",
+        "core"
+      ],
+      "strategy": [
+        "strategy",
+        "resolve",
+        "parse",
+        "combo",
+        "recipe",
+        "combination",
+        "standard",
+        "smart",
+        "parameter",
+        "sequence"
+      ],
+      "parameter": [
+        "param",
+        "normalize",
+        "validate",
+        "map",
+        "filter",
+        "critical",
+        "process",
+        "handle",
+        "manage",
+        "transform"
+      ],
+      "protocol": [
+        "tls",
+        "sni",
+        "cipher",
+        "extension",
+        "hostname",
+        "clienthello",
+        "parse",
+        "extract",
+        "decode",
+        "protocol"
+      ],
+      "attack": [
+        "attack",
+        "primitive",
+        "advanced",
+        "technique",
+        "disorder",
+        "execute",
+        "apply",
+        "perform",
+        "run"
+      ],
+      "logging": [
+        "log",
+        "monitor",
+        "trace",
+        "correlation",
+        "metadata",
+        "operation",
+        "record",
+        "track",
+        "audit",
+        "debug"
+      ],
+      "parsing": [
+        "find",
+        "extract",
+        "position",
+        "offset",
+        "parse",
+        "legacy",
+        "locate",
+        "search",
+        "detect",
+        "identify"
+      ],
+      "utility": [
+        "helper",
+        "util",
+        "support",
+        "create",
+        "generate",
+        "valid",
+        "build",
+        "make",
+        "construct",
+        "format"
+      ],
+      "validation": [
+        "validate",
+        "verify",
+        "check",
+        "ensure",
+        "confirm",
+        "test",
+        "assert",
+        "guard",
+        "secure",
+        "safe"
+      ],
+      "network": [
+        "network",
+        "packet",
+        "payload",
+        "segment",
+        "frame",
+        "data",
+        "bytes",
+        "stream",
+        "buffer",
+        "message"
+      ]
+    },
+    "output_directory": "components",
+    "component_template": "Service",
+    "interface_prefix": "I",
+    "preserve_original": true,
+    "facade_suffix": "_refactored",
+    "effort_per_component": 2.0,
+    "base_effort": 3.0
+  },
+  "knowledge": {
+    "knowledge_base_path": "knowledge",
+    "auto_learn": true,
+    "confidence_threshold": 0.6
+  },
+  "plugins": {
+    "plugin_directories": [
+      "plugins"
+    ],
+    "auto_discover": true,
+    "enabled_plugins": []
+  }
+}

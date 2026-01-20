@@ -7,9 +7,8 @@ Auto Refactor - Автоматический рефакторинг на осн�
 
 import ast
 import json
-import re
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Set, Tuple
+from typing import Dict, List, Any
 from dataclasses import dataclass
 import logging
 
@@ -472,7 +471,7 @@ def main():
     refactor = AutoRefactor(args.knowledge_base)
     plan = refactor.analyze_god_object(filepath)
 
-    print(f"\n📋 План рефакторинга:")
+    print("\n📋 План рефакторинга:")
     print(f"   📁 Целевой файл: {plan.target_file}")
     print(f"   🔧 Трансформации: {len(plan.transformations)}")
     print(f"   🏗️  Компоненты: {len(plan.extracted_components)}")
@@ -481,26 +480,26 @@ def main():
     print(f"   ⚠️  Уровень риска: {plan.risk_level}")
 
     if plan.transformations:
-        print(f"\n🎯 Планируемые трансформации:")
+        print("\n🎯 Планируемые трансформации:")
         for i, transformation in enumerate(plan.transformations, 1):
             print(f"   {i}. {transformation}")
 
     if plan.extracted_components:
-        print(f"\n🏗️  Извлекаемые компоненты:")
+        print("\n🏗️  Извлекаемые компоненты:")
         for component in plan.extracted_components:
             print(f"   - {component}")
 
     if args.dry_run:
-        print(f"\n🔍 Режим dry-run: изменения не применены")
+        print("\n🔍 Режим dry-run: изменения не применены")
         return
 
     # Подтверждение выполнения
-    response = input(f"\n❓ Выполнить рефакторинг? (y/N): ")
+    response = input("\n❓ Выполнить рефакторинг? (y/N): ")
     if response.lower() != "y":
         print("❌ Рефакторинг отменен")
         return
 
-    print(f"\n🚀 Выполнение рефакторинга...")
+    print("\n🚀 Выполнение рефакторинга...")
     start_time = time.time()
 
     results = refactor.execute_refactoring(filepath, plan, dry_run=False)
@@ -514,7 +513,7 @@ def main():
         if results["backup_created"]:
             print(f"   💾 Резервная копия: {results['backup_created']}")
     else:
-        print(f"\n❌ Рефакторинг завершился с ошибками:")
+        print("\n❌ Рефакторинг завершился с ошибками:")
         for error in results["errors"]:
             print(f"   - {error}")
 

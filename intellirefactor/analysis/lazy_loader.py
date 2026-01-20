@@ -14,8 +14,8 @@ from functools import wraps
 import threading
 import time
 
-from .index_store import IndexStore
-from .index_query import IndexQuery
+from .index.store import IndexStore
+from .index.query import IndexQuery
 
 
 @dataclass
@@ -51,7 +51,7 @@ class LazyProjectContext:
             config: Lazy loading configuration
         """
         self.project_root = Path(project_root)
-        self.index_store = index_store
+        self.index.store = index_store
         self.config = config or LazyLoadConfig()
         self.logger = logging.getLogger(__name__)
         self._lock = threading.RLock()
@@ -103,7 +103,7 @@ class LazyProjectContext:
     def _get_file_hash(self, file_path: str) -> Optional[str]:
         """Get hash for a file from the index."""
         if self._file_hashes is None:
-            self._file_hashes = self.index_store.get_all_file_hashes()
+            self._file_hashes = self.index.store.get_all_file_hashes()
 
         return self._file_hashes.get(file_path)
 
@@ -139,7 +139,7 @@ class LazyProjectContext:
         """
 
         def _load_file_info():
-            return self.index_store.get_file(file_path)
+            return self.index.store.get_file(file_path)
 
         if self.config.enable_caching:
             return self._with_cache(
@@ -160,7 +160,7 @@ class LazyProjectContext:
         """
 
         def _load_symbol_info():
-            return self.index_store.get_symbol(symbol_uid)
+            return self.index.store.get_symbol(symbol_uid)
 
         if self.config.enable_caching:
             return self._with_cache(

@@ -231,16 +231,57 @@ class AnalysisConfig:
     """Configuration for analysis operations."""
 
     max_file_size: int = 1024 * 1024  # 1MB
-    excluded_patterns: List[str] = field(
+    
+    # Standardized exclude patterns (single source of truth)
+    exclude_patterns: List[str] = field(
         default_factory=lambda: [
-            "*.pyc",
-            "__pycache__",
-            ".git",
-            ".venv",
-            "venv",
-            "node_modules",
+            # Compiled Python files
+            "**/*.pyc",
+            "**/__pycache__/**",
+            
+            # Version control
+            "**/.git/**",
+            "**/.svn/**",
+            "**/.hg/**",
+            
+            # Virtual environments
+            "**/.venv/**",
+            "**/venv/**",
+            "**/env/**",
+            "**/ENV/**",
+            
+            # Build artifacts
+            "**/build/**",
+            "**/dist/**",
+            "**/*.egg-info/**",
+            
+            # Dependencies
+            "**/node_modules/**",
+            "**/vendor/**",
+            
+            # IDE files
+            "**/.vscode/**",
+            "**/.idea/**",
+            "**/*.swp",
+            "**/*.swo",
+            
+            # Logs and temporary files
+            "**/*.log",
+            "**/tmp/**",
+            "**/temp/**",
+            
+            # Tests (can be overridden)
+            "**/test_*.py",
+            "**/*_test.py",
+            "**/tests/**",
+            "**/testing/**",
         ]
     )
+    
+    # Include patterns
+    include_patterns: List[str] = field(default_factory=lambda: ["**/*.py"])
+    
+    # Metrics thresholds
     metrics_thresholds: Dict[str, float] = field(
         default_factory=lambda: {
             "cyclomatic_complexity": 10.0,
@@ -248,20 +289,9 @@ class AnalysisConfig:
             "lines_of_code": 500,
         }
     )
+    
+    # Analysis parameters
     analysis_depth: int = 10
-
-    # Project analyzer specific settings
-    include_patterns: List[str] = field(default_factory=lambda: ["**/*.py"])
-    exclude_patterns: List[str] = field(
-        default_factory=lambda: [
-            "**/test_*.py",
-            "**/*_test.py",
-            "**/__pycache__/**",
-            "**/.*",
-            "**/build/**",
-            "**/dist/**",
-        ]
-    )
     large_file_threshold: int = 500  # Lines of code
     complexity_threshold: float = 15.0  # Cyclomatic complexity
     responsibilities_threshold: int = 5  # Number of responsibilities

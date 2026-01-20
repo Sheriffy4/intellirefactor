@@ -7,7 +7,7 @@ import os
 import ast
 from pathlib import Path
 from typing import List
-from ..analysis.index_store import IndexStore
+from ..analysis.index.store import IndexStore
 
 
 class SmartFlowVisitor(ast.NodeVisitor):
@@ -199,7 +199,7 @@ class SmartFlowVisitor(ast.NodeVisitor):
 
 class FlowchartGenerator:
     def __init__(self, index_store: IndexStore):
-        self.index_store = index_store
+        self.index.store = index_store
 
     def generate_call_graph(self, start_symbol_name: str, max_depth: int = 3) -> str:
         """
@@ -211,7 +211,7 @@ class FlowchartGenerator:
 
         # Find the starting symbol ID
         start_symbol = None
-        with self.index_store._get_connection() as conn:
+        with self.index.store._get_connection() as conn:
             # Try exact match first, then qualified name
             cursor = conn.execute(
                 "SELECT symbol_id, qualified_name FROM symbols WHERE name = ? OR qualified_name = ? LIMIT 1",
@@ -234,7 +234,7 @@ class FlowchartGenerator:
             mermaid.append(f'    {src_id}["{current_name}"]')
 
             # Find what this symbol calls
-            with self.index_store._get_connection() as conn:
+            with self.index.store._get_connection() as conn:
                 cursor = conn.execute(
                     """
                     SELECT s.symbol_id, s.qualified_name, d.dependency_kind
@@ -295,7 +295,7 @@ class FlowchartGenerator:
         mermaid = ["classDiagram"]
 
         try:
-            with self.index_store._get_connection() as conn:
+            with self.index.store._get_connection() as conn:
                 # Get classes
                 cursor = conn.execute(
                     """SELECT s.name, s.qualified_name, f.file_path 

@@ -21,6 +21,18 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+try:
+    from ..analysis.foundation.models import Severity, parse_severity
+except Exception:  # pragma: no cover (direct run / tests)
+    try:
+        from intellirefactor.analysis.foundation.models import Severity, parse_severity  # type: ignore
+    except Exception:  # pragma: no cover
+        Severity = None  # type: ignore
+
+        def parse_severity(x: Any, default: Any = None) -> Any:  # type: ignore
+            return x if x is not None else default
+
+
 # Robust import: package-relative in real project, fallback for direct execution/tests.
 try:
     from ..interfaces import BaseRefactoringSystem, GenericRefactoringOpportunity
@@ -135,7 +147,7 @@ class RefactoringOpportunity:
 
     opportunity_id: str
     type: RefactoringOpportunityType
-    severity: str  # "low", "medium", "high", "critical"
+    severity: Severity
     confidence: float  # 0.0 to 1.0
 
     file_path: str
@@ -268,7 +280,9 @@ class CodeAnalyzer:
         """Calculate simplified cyclomatic complexity."""
         complexity = 1
         for node in ast.walk(tree):
-            if isinstance(node, (ast.If, ast.While, ast.For, ast.Try, ast.With, ast.Match)):
+            if isinstance(
+                node, (ast.If, ast.While, ast.For, ast.Try, ast.With, ast.Match)
+            ):
                 complexity += 1
             elif isinstance(node, ast.BoolOp):
                 complexity += max(0, len(node.values) - 1)
@@ -299,7 +313,9 @@ class CodeAnalyzer:
 
     def _estimate_coupling(self, tree: ast.AST) -> float:
         """Estimate coupling level (0.0 to 1.0)."""
-        imports = [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+        imports = [
+            n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))
+        ]
         attrs = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute)]
         return min(1.0, (len(imports) + len(attrs)) / 50.0)
 
@@ -320,7 +336,9 @@ class CodeAnalyzer:
 
     def _count_dependencies(self, tree: ast.AST) -> int:
         """Count import statements."""
-        imports = [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+        imports = [
+            n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))
+        ]
         return len(imports)
 
     def _default_metrics(self) -> CodeMetrics:
@@ -362,7 +380,9 @@ class OpportunityDetector:
         if self._is_god_class(metrics):
             opportunities.append(self._create_god_class_opportunity(file_path, metrics))
         if self._is_large_configuration(file_path, metrics):
-            opportunities.append(self._create_config_split_opportunity(file_path, metrics))
+            opportunities.append(
+                self._create_config_split_opportunity(file_path, metrics)
+            )
         if self._has_tight_coupling(metrics):
             opportunities.append(self._create_coupling_opportunity(file_path, metrics))
         if self._has_low_cohesion(metrics):
@@ -373,11 +393,16 @@ class OpportunityDetector:
     def _is_god_class(self, metrics: CodeMetrics) -> bool:
         thresholds = self.knowledge_base.detection_rules.get(
             RefactoringOpportunityType.GOD_CLASS,
-            {"file_size_threshold": 1000, "responsibility_threshold": 3, "cohesion_threshold": 0.5},
+            {
+                "file_size_threshold": 1000,
+                "responsibility_threshold": 3,
+                "cohesion_threshold": 0.5,
+            },
         )
         return (
             metrics.file_size > thresholds["file_size_threshold"]
-            and metrics.number_of_responsibilities > thresholds["responsibility_threshold"]
+            and metrics.number_of_responsibilities
+            > thresholds["responsibility_threshold"]
             and metrics.cohesion_level < thresholds["cohesion_threshold"]
         )
 
@@ -390,11 +415,14 @@ class OpportunityDetector:
                 "filename_patterns": ["config", "settings"],
             },
         )
-        filename_matches = any(p in file_path.lower() for p in thresholds["filename_patterns"])
+        filename_matches = any(
+            p in file_path.lower() for p in thresholds["filename_patterns"]
+        )
         return (
             filename_matches
             and metrics.file_size > thresholds["file_size_threshold"]
-            and metrics.number_of_responsibilities > thresholds["responsibility_threshold"]
+            and metrics.number_of_responsibilities
+            > thresholds["responsibility_threshold"]
         )
 
     def _has_tight_coupling(self, metrics: CodeMetrics) -> bool:
@@ -411,12 +439,14 @@ class OpportunityDetector:
         )["cohesion_threshold"]
         return metrics.cohesion_level < threshold
 
-    def _create_god_class_opportunity(self, file_path: str, metrics: CodeMetrics) -> RefactoringOpportunity:
+    def _create_god_class_opportunity(
+        self, file_path: str, metrics: CodeMetrics
+    ) -> RefactoringOpportunity:
         now = datetime.now()
         return RefactoringOpportunity(
             opportunity_id=f"god_class_{Path(file_path).stem}_{now.strftime('%Y%m%d_%H%M%S')}",
             type=RefactoringOpportunityType.GOD_CLASS,
-            severity="high",
+            severity=Severity.HIGH,
             confidence=0.9,
             file_path=file_path,
             line_start=1,
@@ -433,7 +463,11 @@ class OpportunityDetector:
                 "complexity": float(metrics.cyclomatic_complexity),
             },
             impact_assessment="High impact - difficult to maintain, test, and extend",
-            recommended_patterns=["extract_component", "dependency_injection", "facade_pattern"],
+            recommended_patterns=[
+                "extract_component",
+                "dependency_injection",
+                "facade_pattern",
+            ],
             estimated_effort_hours=40.0,
             risk_level="medium",
             can_auto_refactor=True,
@@ -447,12 +481,14 @@ class OpportunityDetector:
             detection_method="automated_analysis",
         )
 
-    def _create_config_split_opportunity(self, file_path: str, metrics: CodeMetrics) -> RefactoringOpportunity:
+    def _create_config_split_opportunity(
+        self, file_path: str, metrics: CodeMetrics
+    ) -> RefactoringOpportunity:
         now = datetime.now()
         return RefactoringOpportunity(
             opportunity_id=f"config_split_{Path(file_path).stem}_{now.strftime('%Y%m%d_%H%M%S')}",
             type=RefactoringOpportunityType.LARGE_CONFIGURATION,
-            severity="medium",
+            severity=Severity.MEDIUM,
             confidence=0.85,
             file_path=file_path,
             line_start=1,
@@ -469,17 +505,22 @@ class OpportunityDetector:
             risk_level="low",
             can_auto_refactor=True,
             automation_confidence=0.9,
-            manual_steps_required=["Validate domain boundaries", "Test configuration loading"],
+            manual_steps_required=[
+                "Validate domain boundaries",
+                "Test configuration loading",
+            ],
             detected_date=now.isoformat(),
             detection_method="automated_analysis",
         )
 
-    def _create_coupling_opportunity(self, file_path: str, metrics: CodeMetrics) -> RefactoringOpportunity:
+    def _create_coupling_opportunity(
+        self, file_path: str, metrics: CodeMetrics
+    ) -> RefactoringOpportunity:
         now = datetime.now()
         return RefactoringOpportunity(
             opportunity_id=f"coupling_{Path(file_path).stem}_{now.strftime('%Y%m%d_%H%M%S')}",
             type=RefactoringOpportunityType.TIGHT_COUPLING,
-            severity="medium",
+            severity=Severity.MEDIUM,
             confidence=0.75,
             file_path=file_path,
             line_start=1,
@@ -505,12 +546,14 @@ class OpportunityDetector:
             detection_method="automated_analysis",
         )
 
-    def _create_cohesion_opportunity(self, file_path: str, metrics: CodeMetrics) -> RefactoringOpportunity:
+    def _create_cohesion_opportunity(
+        self, file_path: str, metrics: CodeMetrics
+    ) -> RefactoringOpportunity:
         now = datetime.now()
         return RefactoringOpportunity(
             opportunity_id=f"cohesion_{Path(file_path).stem}_{now.strftime('%Y%m%d_%H%M%S')}",
             type=RefactoringOpportunityType.LOW_COHESION,
-            severity="medium",
+            severity=Severity.MEDIUM,
             confidence=0.7,
             file_path=file_path,
             line_start=1,
@@ -569,7 +612,9 @@ class QualityAssessor:
             tests_pass=True,
             performance_acceptable=True,
             backward_compatible=True,
-            improvement_suggestions=self._generate_improvement_suggestions(improvements),
+            improvement_suggestions=self._generate_improvement_suggestions(
+                improvements
+            ),
             follow_up_refactorings=self._suggest_follow_up_refactorings(after_metrics),
             assessed_date=datetime.now().isoformat(),
             assessor="intelligent_refactoring_system",
@@ -647,10 +692,14 @@ class QualityAssessor:
             improvements[RefactoringQualityMetric.COHESION_IMPROVEMENT] = 0.0
 
         before_m = 1.0 / (
-            1.0 + before.get("avg_file_size", 1000.0) / 1000.0 + before.get("complexity", 10.0) / 10.0
+            1.0
+            + before.get("avg_file_size", 1000.0) / 1000.0
+            + before.get("complexity", 10.0) / 10.0
         )
         after_m = 1.0 / (
-            1.0 + after.get("avg_file_size", 1000.0) / 1000.0 + after.get("complexity", 10.0) / 10.0
+            1.0
+            + after.get("avg_file_size", 1000.0) / 1000.0
+            + after.get("complexity", 10.0) / 10.0
         )
         denom = 1.0 - before_m
         improvements[RefactoringQualityMetric.MAINTAINABILITY_IMPROVEMENT] = (
@@ -659,7 +708,9 @@ class QualityAssessor:
 
         return improvements
 
-    def _calculate_quality_score(self, improvements: Dict[RefactoringQualityMetric, float]) -> float:
+    def _calculate_quality_score(
+        self, improvements: Dict[RefactoringQualityMetric, float]
+    ) -> float:
         """Calculate overall score clamped to [0, 1]."""
         if not improvements:
             return 0.0
@@ -681,7 +732,9 @@ class QualityAssessor:
         raw = weighted / total_w if total_w else 0.0
         return max(0.0, min(1.0, raw))
 
-    def _identify_success_indicators(self, improvements: Dict[RefactoringQualityMetric, float]) -> List[str]:
+    def _identify_success_indicators(
+        self, improvements: Dict[RefactoringQualityMetric, float]
+    ) -> List[str]:
         indicators: List[str] = []
         for metric, improvement in improvements.items():
             if improvement > 0.5:
@@ -690,7 +743,9 @@ class QualityAssessor:
                 indicators.append(f"Moderate {metric.value}: {improvement:.2%}")
         return indicators
 
-    def _identify_quality_issues(self, improvements: Dict[RefactoringQualityMetric, float]) -> List[str]:
+    def _identify_quality_issues(
+        self, improvements: Dict[RefactoringQualityMetric, float]
+    ) -> List[str]:
         issues: List[str] = []
         for metric, improvement in improvements.items():
             if improvement < 0:
@@ -699,19 +754,29 @@ class QualityAssessor:
                 issues.append(f"Limited {metric.value}: {improvement:.2%}")
         return issues
 
-    def _generate_improvement_suggestions(self, improvements: Dict[RefactoringQualityMetric, float]) -> List[str]:
+    def _generate_improvement_suggestions(
+        self, improvements: Dict[RefactoringQualityMetric, float]
+    ) -> List[str]:
         suggestions: List[str] = []
         for metric, improvement in improvements.items():
             if improvement < 0.3:
                 if metric == RefactoringQualityMetric.COMPLEXITY_REDUCTION:
-                    suggestions.append("Consider further method extraction to reduce complexity")
+                    suggestions.append(
+                        "Consider further method extraction to reduce complexity"
+                    )
                 elif metric == RefactoringQualityMetric.COUPLING_REDUCTION:
-                    suggestions.append("Consider introducing more interfaces to reduce coupling")
+                    suggestions.append(
+                        "Consider introducing more interfaces to reduce coupling"
+                    )
                 elif metric == RefactoringQualityMetric.COHESION_IMPROVEMENT:
-                    suggestions.append("Consider grouping related methods into separate components")
+                    suggestions.append(
+                        "Consider grouping related methods into separate components"
+                    )
         return suggestions
 
-    def _suggest_follow_up_refactorings(self, after_metrics: Dict[str, float]) -> List[str]:
+    def _suggest_follow_up_refactorings(
+        self, after_metrics: Dict[str, float]
+    ) -> List[str]:
         suggestions: List[str] = []
         if after_metrics.get("avg_file_size", 0.0) > 500:
             suggestions.append("Consider further component extraction for large files")
@@ -726,13 +791,19 @@ class IntelligentRefactoringSystem(BaseRefactoringSystem):
     """Main intelligent refactoring system that orchestrates all components."""
 
     def __init__(self, config: Optional[Any] = None) -> None:
-        if config is not None and hasattr(config, "__dict__") and not isinstance(config, dict):
+        if (
+            config is not None
+            and hasattr(config, "__dict__")
+            and not isinstance(config, dict)
+        ):
             self.config = {
                 "safety_level": getattr(config, "safety_level", "moderate"),
                 "auto_apply": getattr(config, "auto_apply", False),
                 "backup_enabled": getattr(config, "backup_enabled", True),
                 "validation_required": getattr(config, "validation_required", True),
-                "max_operations_per_session": getattr(config, "max_operations_per_session", 50),
+                "max_operations_per_session": getattr(
+                    config, "max_operations_per_session", 50
+                ),
                 "stop_on_failure": getattr(config, "stop_on_failure", True),
             }
         else:
@@ -796,7 +867,9 @@ class IntelligentRefactoringSystem(BaseRefactoringSystem):
         )
 
         return MachineReadableKnowledgeBase(
-            knowledge_base_id=self.config.get("knowledge_base_id", "generic_refactoring_kb"),
+            knowledge_base_id=self.config.get(
+                "knowledge_base_id", "generic_refactoring_kb"
+            ),
             version="1.0.0",
             created_date=datetime.now().isoformat(),
             transformation_rules=[],
@@ -836,7 +909,9 @@ class IntelligentRefactoringSystem(BaseRefactoringSystem):
 
         all_opps: List[RefactoringOpportunity] = []
         for file_path in python_files:
-            all_opps.extend(self.opportunity_detector.detect_opportunities(str(file_path), context))
+            all_opps.extend(
+                self.opportunity_detector.detect_opportunities(str(file_path), context)
+            )
 
         prioritized = self._prioritize_opportunities(all_opps)
         plan = self._generate_refactoring_plan(prioritized)
@@ -844,26 +919,44 @@ class IntelligentRefactoringSystem(BaseRefactoringSystem):
         return {
             "total_files_analyzed": len(python_files),
             "opportunities_detected": len(all_opps),
-            "high_priority_opportunities": len([o for o in all_opps if o.severity == "high"]),
+            "high_priority_opportunities": len(
+                [o for o in all_opps if o.severity == Severity.HIGH]
+            ),
             "automation_ready": len([o for o in all_opps if o.can_auto_refactor]),
-            "estimated_total_effort_hours": sum(o.estimated_effort_hours for o in all_opps),
+            "estimated_total_effort_hours": sum(
+                o.estimated_effort_hours for o in all_opps
+            ),
             "prioritized_opportunities": prioritized[:10],
             "refactoring_plan": plan,
         }
 
-    def _prioritize_opportunities(self, opportunities: List[RefactoringOpportunity]) -> List[RefactoringOpportunity]:
+    def _prioritize_opportunities(
+        self, opportunities: List[RefactoringOpportunity]
+    ) -> List[RefactoringOpportunity]:
         """Prioritize refactoring opportunities."""
+
         def priority_score(opp: RefactoringOpportunity) -> float:
-            severity_scores = {"critical": 4, "high": 3, "medium": 2, "low": 1}
-            s = severity_scores.get(opp.severity, 1)
+            severity_scores = {
+                Severity.CRITICAL: 4,
+                Severity.HIGH: 3,
+                Severity.MEDIUM: 2,
+                Severity.LOW: 1,
+                Severity.INFO: 0,
+            }
+            sev = parse_severity(getattr(opp, "severity", None), default=Severity.LOW)
+            s = severity_scores.get(sev, 1)
             return (
-                s * opp.confidence * (1.0 + opp.automation_confidence)
+                s
+                * opp.confidence
+                * (1.0 + opp.automation_confidence)
                 / (1.0 + opp.estimated_effort_hours / 10.0)
             )
 
         return sorted(opportunities, key=priority_score, reverse=True)
 
-    def _generate_refactoring_plan(self, opportunities: List[Any]) -> List[Dict[str, Any]]:
+    def _generate_refactoring_plan(
+        self, opportunities: List[Any]
+    ) -> List[Dict[str, Any]]:
         """
         Generate a refactoring execution plan.
 
@@ -881,20 +974,30 @@ class IntelligentRefactoringSystem(BaseRefactoringSystem):
             plan.append(
                 {
                     "step": i,
-                    "opportunity_id": getattr(opp, "opportunity_id", getattr(opp, "id", "unknown")),
+                    "opportunity_id": getattr(
+                        opp, "opportunity_id", getattr(opp, "id", "unknown")
+                    ),
                     "description": getattr(opp, "description", ""),
                     "type": opp_type_value,
-                    "estimated_effort_hours": float(getattr(opp, "estimated_effort_hours", 0.0)),
+                    "estimated_effort_hours": float(
+                        getattr(opp, "estimated_effort_hours", 0.0)
+                    ),
                     "automation_ready": bool(getattr(opp, "can_auto_refactor", False)),
-                    "recommended_patterns": list(getattr(opp, "recommended_patterns", [])),
+                    "recommended_patterns": list(
+                        getattr(opp, "recommended_patterns", [])
+                    ),
                     "manual_steps": list(getattr(opp, "manual_steps_required", [])),
-                    "risk_level": getattr(opp, "risk_level", getattr(opp, "severity", "unknown")),
+                    "risk_level": getattr(
+                        opp, "risk_level", getattr(opp, "severity", "unknown")
+                    ),
                 }
             )
 
         return plan
 
-    def identify_opportunities(self, analysis_data: Dict[str, Any]) -> List[GenericRefactoringOpportunity]:
+    def identify_opportunities(
+        self, analysis_data: Dict[str, Any]
+    ) -> List[GenericRefactoringOpportunity]:
         """Identify refactoring opportunities from analysis data."""
         opportunities: List[GenericRefactoringOpportunity] = []
         project_path = analysis_data.get("project_path", ".")
@@ -917,7 +1020,9 @@ class IntelligentRefactoringSystem(BaseRefactoringSystem):
                         estimated_impact={
                             "complexity_reduction": 0.3,
                             "maintainability_improvement": 0.4,
-                            "automation_potential": float(c.get("automation_potential", 0.5)),
+                            "automation_potential": float(
+                                c.get("automation_potential", 0.5)
+                            ),
                         },
                         prerequisites=[],
                         automation_confidence=float(c.get("automation_potential", 0.5)),
@@ -953,7 +1058,9 @@ class IntelligentRefactoringSystem(BaseRefactoringSystem):
 
         return opportunities
 
-    def generate_refactoring_plan(self, opportunities: List[GenericRefactoringOpportunity]) -> Dict[str, Any]:
+    def generate_refactoring_plan(
+        self, opportunities: List[GenericRefactoringOpportunity]
+    ) -> Dict[str, Any]:
         """
         Generate a refactoring plan from generic opportunities.
 
@@ -987,10 +1094,14 @@ class IntelligentRefactoringSystem(BaseRefactoringSystem):
         return {
             "id": f"plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             "opportunities_count": len(opportunities),
-            "estimated_total_effort": sum(float(max(1, 12 - int(o.priority))) for o in opportunities),
+            "estimated_total_effort": sum(
+                float(max(1, 12 - int(o.priority))) for o in opportunities
+            ),
             "steps": steps,
             "created_at": datetime.now().isoformat(),
-            "automation_ready_count": len([o for o in opportunities if o.automation_confidence > 0.7]),
+            "automation_ready_count": len(
+                [o for o in opportunities if o.automation_confidence > 0.7]
+            ),
         }
 
     def export_knowledge_base(self, filepath: str) -> None:
@@ -1026,7 +1137,9 @@ class IntelligentRefactoringSystem(BaseRefactoringSystem):
         logger.info("Exported knowledge base to %s", filepath)
 
 
-def create_intelligent_refactoring_system(config: Optional[Dict[str, Any]] = None) -> IntelligentRefactoringSystem:
+def create_intelligent_refactoring_system(
+    config: Optional[Dict[str, Any]] = None,
+) -> IntelligentRefactoringSystem:
     """Create and initialize the intelligent refactoring system."""
     return IntelligentRefactoringSystem(config)
 

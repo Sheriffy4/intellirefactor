@@ -548,7 +548,7 @@ class GlobalRefactoringOrchestrator:
             return {"built": False, "existed": True, "details": {}}
 
         # Lazy import to avoid heavy deps and circular imports.
-        from ..analysis.index_builder import IndexBuilder
+        from ..analysis.index.builder import IndexBuilder
 
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -581,7 +581,7 @@ class GlobalRefactoringOrchestrator:
         Raises:
             Any exception from underlying visualization components.
         """
-        from ..analysis.index_store import IndexStore
+        from ..analysis.index.store import IndexStore
         from ..visualization.diagram_generator import FlowchartGenerator
 
         output_dir.mkdir(parents=True, exist_ok=True)

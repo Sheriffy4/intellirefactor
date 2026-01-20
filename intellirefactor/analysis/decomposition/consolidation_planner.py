@@ -53,11 +53,12 @@ class ConsolidationPlanner:
             return []
 
         plans: List[CanonicalizationPlan] = []
+        used_targets: Dict[Tuple[str, str], str] = {}  # (target_module, target_symbol) -> cluster_id
 
         for cluster in clusters:
             if cluster.recommendation == RecommendationType.KEEP_SEPARATE:
                 continue
-            plan = self._create_cluster_plan(cluster, functional_map, mode)
+            plan = self._create_cluster_plan(cluster, functional_map, mode, used_targets)
             if plan:
                 plans.append(plan)
 
@@ -70,6 +71,7 @@ class ConsolidationPlanner:
         cluster: SimilarityCluster,
         functional_map: ProjectFunctionalMap,
         mode: ApplicationMode,
+        used_targets: Dict[Tuple[str, str], str],
     ) -> Optional[CanonicalizationPlan]:
         """Create consolidation plan for a single cluster."""
         try:
@@ -77,7 +79,27 @@ class ConsolidationPlanner:
             if not cluster_blocks:
                 return None
 
+            # SAFETY: in apply_safe we refuse to merge methods with different method names.
+            # Example: visit_FunctionDef vs visit_AsyncFunctionDef, visit_With vs visit_AsyncWith, etc.
+            if mode == ApplicationMode.APPLY_SAFE:
+                method_names = {str(getattr(b, "method_name", "")) for b in cluster_blocks if getattr(b, "is_method", False)}
+                method_names = {n for n in method_names if n}
+                if len(method_names) > 1:
+                    self.logger.warning(
+                        "Skipping cluster %s in APPLY_SAFE: method names differ (%s)",
+                        cluster.id,
+                        ", ".join(sorted(method_names)),
+                    )
+                    return None
+            
             target_module, target_symbol = self._parse_proposed_target(cluster.proposed_target)
+            target_module, target_symbol = self._reserve_unique_target(
+                cluster=cluster,
+                blocks=cluster_blocks,
+                target_module=target_module,
+                target_symbol=target_symbol,
+                used_targets=used_targets,
+            )
 
             steps = self._generate_consolidation_steps(
                 cluster=cluster,
@@ -103,6 +125,52 @@ class ConsolidationPlanner:
             self.logger.error(f"Failed to create plan for cluster {cluster.id}: {e}", exc_info=True)
             return None
 
+    def _reserve_unique_target(
+        self,
+        *,
+        cluster: SimilarityCluster,
+        blocks: List[FunctionalBlock],
+        target_module: str,
+        target_symbol: str,
+        used_targets: Dict[Tuple[str, str], str],
+    ) -> Tuple[str, str]:
+        key = (target_module, target_symbol)
+        owner = used_targets.get(key)
+        if not owner or owner == cluster.id:
+            used_targets[key] = cluster.id
+            return target_module, target_symbol
+
+        # collision: try stable disambiguation
+        canonical = self._find_canonical_block(blocks)
+        class_suffix = ""
+        if getattr(canonical, "is_method", False) and "." in (canonical.qualname or ""):
+            # qualname like Class.method
+            class_suffix = canonical.qualname.split(".")[-2]
+
+        candidates: List[str] = []
+        if class_suffix:
+            candidates.append(f"{target_symbol}__{class_suffix}")
+        candidates.append(f"{target_symbol}__{cluster.id[:8]}")
+
+        # ensure unique
+        for sym in candidates:
+            k2 = (target_module, sym)
+            if k2 not in used_targets:
+                used_targets[k2] = cluster.id
+                return target_module, sym
+
+        # last resort: counter
+        i = 2
+        while True:
+            sym = f"{target_symbol}__{cluster.id[:8]}__{i}"
+            k2 = (target_module, sym)
+            if k2 not in used_targets:
+                used_targets[k2] = cluster.id
+                return target_module, sym
+            i += 1
+    
+    
+    
     def _parse_proposed_target(self, proposed_target: str) -> Tuple[str, str]:
         """Parse proposed target into module and symbol."""
         pt = (proposed_target or "").strip()

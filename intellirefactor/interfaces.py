@@ -111,9 +111,7 @@ class RefactoringSystemProtocol(Protocol):
         self, analysis_data: Dict[str, Any]
     ) -> List[GenericRefactoringOpportunity]:
         """Identify refactoring opportunities from analysis data."""
-        # [IR_DELEGATED] Auto-generated wrapper (functional decomposition)
-        from intellirefactor.unified.analysis import detection_identify_opportunities as __ir_unified_detection_identify_opportunities
-        return __ir_unified_detection_identify_opportunities(self, analysis_data)
+        ...
 
     def assess_opportunity_quality(self, opportunity: GenericRefactoringOpportunity) -> float:
         """Assess the quality/value of a refactoring opportunity."""

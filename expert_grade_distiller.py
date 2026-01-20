@@ -13,9 +13,7 @@
 """
 
 import json
-import re
-from pathlib import Path
-from typing import Dict, List, Set, Any, Optional, Tuple
+from typing import Dict, Any
 from collections import defaultdict, Counter
 
 class ExpertGradeDistiller:
@@ -537,12 +535,12 @@ def main():
         with open(args.output, 'w', encoding='utf-8') as f:
             json.dump(expert_report, f, ensure_ascii=False, indent=2)
         
-        print(f"\n✅ EXPERT-GRADE analysis complete!")
+        print("\n✅ EXPERT-GRADE analysis complete!")
         print(f"📊 Quality score: {expert_report['expert_assessment']['overall_score']:.1f}/10.0")
         print(f"📁 Output saved to: {args.output}")
         
         # Показываем статус по 6 пунктам эксперта
-        print(f"\n📋 Expert requirements status:")
+        print("\n📋 Expert requirements status:")
         for req, status in expert_report['expert_assessment']['requirements_status'].items():
             emoji = "✅" if status == "ACHIEVED" else "🔶" if status == "PARTIAL" else "❌"
             print(f"  {emoji} {req}: {status}")
@@ -550,11 +548,11 @@ def main():
         # Показываем что еще нужно для 10/10
         missing = expert_report['expert_assessment']['missing_for_perfect_10']
         if missing:
-            print(f"\n🎯 Missing for perfect 10/10:")
+            print("\n🎯 Missing for perfect 10/10:")
             for item in missing:
                 print(f"  • {item}")
         else:
-            print(f"\n🎉 PERFECT 10/10 achieved!")
+            print("\n🎉 PERFECT 10/10 achieved!")
         
         return 0
         

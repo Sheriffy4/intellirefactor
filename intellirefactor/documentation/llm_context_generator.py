@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
 from ..analysis.file_analyzer import FileAnalyzer
+from .ast_utils import extract_docstring
 
 
 @dataclass
@@ -543,9 +544,8 @@ class {main_class["name"]}:
 
     def _extract_docstring(self, node: ast.AST) -> Optional[str]:
         """Extract docstring from a node."""
-        # [IR_DELEGATED] Auto-generated wrapper (functional decomposition)
-        from intellirefactor.unified.documentation import extract_docstring as __ir_unified_extract_docstring
-        return __ir_unified_extract_docstring(self, node)
+        # Local implementation (unified module was removed/non-existent)
+        return extract_docstring(node)
 
     def _infer_module_purpose(self, analysis_data: Dict[str, Any]) -> str:
         """Infer the module's purpose from analysis data."""

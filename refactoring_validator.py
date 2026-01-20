@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-Refactoring Results Validator
+Refactoring Results Validator - Thin wrapper for intellirefactor.orchestration.refactoring_validator
 
-Валидатор результатов глобального рефакторинга.
-Проверяет что все документы созданы и ссылки между ними работают.
+This is a deprecated wrapper. Please use intellirefactor.orchestration.RefineryValidator directly.
 """
 
-import sys
-from pathlib import Path
-from typing import List, Dict, Any
-from dataclasses import dataclass
-import re
+import warnings
+from intellirefactor.orchestration.refactoring_validator import *
+
+warnings.warn(
+    "refactoring_validator.py is deprecated; use intellirefactor.orchestration.RefineryValidator",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 @dataclass

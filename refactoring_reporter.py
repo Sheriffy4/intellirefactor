@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-Refactoring Final Reporter
+Refactoring Final Reporter - Thin wrapper for intellirefactor.orchestration.refactoring_reporter
 
-Создает итоговый отчет о выполненном глобальном рефакторинге.
-Анализирует результаты всех этапов и создает сводный отчет.
+This is a deprecated wrapper. Please use intellirefactor.orchestration.RefineryReporter directly.
 """
 
-import json
-import sys
-from pathlib import Path
-from datetime import datetime
-from typing import Dict, List, Any, Optional
-from dataclasses import dataclass, asdict
-import re
+import warnings
+from intellirefactor.orchestration.refactoring_reporter import *
+
+warnings.warn(
+    "refactoring_reporter.py is deprecated; use intellirefactor.orchestration.RefineryReporter",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 @dataclass

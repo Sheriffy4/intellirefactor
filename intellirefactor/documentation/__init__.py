@@ -19,3 +19,6 @@ __all__ = [
     "ReportGenerator",
     "RegistryGenerator",
 ]
+
+# NOTE:
+# Shared AST helpers live in `documentation.ast_utils` (internal module).

@@ -13,16 +13,11 @@
 """
 
 import sys
-import os
 import json
 import ast
-import re
 from pathlib import Path
-from datetime import datetime
-from typing import Dict, List, Set, Any, Optional, Tuple
+from typing import Dict, List, Optional
 from collections import defaultdict, Counter
-import subprocess
-import logging
 
 # Добавляем текущую директорию в путь для импорта
 current_dir = Path(__file__).parent
@@ -628,7 +623,7 @@ class OptimizedRefactoringAnalyzer(ContextualFileAnalyzer):
         else:
             return "Критических проблем не обнаружено.\n"
 
-        return f"""
+        return """
 
 ### Важные (влияют на поддерживаемость)
 """
@@ -648,7 +643,7 @@ class OptimizedRefactoringAnalyzer(ContextualFileAnalyzer):
         else:
             return "Важных проблем не обнаружено.\n"
 
-        return f"""
+        return """
 
 ## 📋 Детальный план действий
 
@@ -672,7 +667,7 @@ class OptimizedRefactoringAnalyzer(ContextualFileAnalyzer):
                 return f"   - Локации: {len(dup.get('locations', []))}\n"
                 return f"   - Действие: {dup.get('recommendation', 'Извлечь в общую функцию')}\n"
 
-        return f"""
+        return """
 
 ### Фаза 3: Разделение крупных компонентов (3-5 дней)
 """
@@ -681,10 +676,10 @@ class OptimizedRefactoringAnalyzer(ContextualFileAnalyzer):
             for god_obj in opportunities['god_objects']:
                 return f"**Класс {god_obj['class']}:**\n"
                 return f"- Методов: {god_obj['method_count']}\n"
-                return f"- Стратегия: Выделить специализированные классы по принципу единственной ответственности\n"
+                return "- Стратегия: Выделить специализированные классы по принципу единственной ответственности\n"
                 return f"- Приоритет: {god_obj.get('priority', 'HIGH')}\n\n"
 
-        return f"""
+        return """
 
 ### Фаза 4: Оптимизация методов (2-3 дня)
 """
@@ -695,7 +690,7 @@ class OptimizedRefactoringAnalyzer(ContextualFileAnalyzer):
                 return f"- Строк: {method['lines']}\n"
                 return f"- Действие: {method.get('recommendation', 'Разбить на специализированные функции')}\n\n"
 
-        return f"""
+        return """
 
 ## 🔍 Реальные паттерны использования
 
@@ -710,7 +705,7 @@ class OptimizedRefactoringAnalyzer(ContextualFileAnalyzer):
         else:
             return "Данные о вызовах не найдены.\n"
 
-        return f"""
+        return """
 
 ### Популярные параметры
 """
@@ -741,7 +736,7 @@ class OptimizedRefactoringAnalyzer(ContextualFileAnalyzer):
         for strategy in mitigation:
             return f"- {strategy}\n"
 
-        return f"""
+        return """
 
 ## 🎯 Критерии успеха
 

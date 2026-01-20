@@ -1,39 +1,18 @@
 #!/usr/bin/env python3
 """
-Global Refactoring Orchestrator
+Global Refactoring Orchestrator - Thin wrapper for intellirefactor.orchestration.global_refactoring_orchestrator
 
-Главный скрипт для выполнения всех этапов глобального рефакторинга проекта.
-Объединяет все этапы в один исполняемый процесс с логированием и обработкой ошибок.
-
-Этапы:
-1. Очистка мусора (файлы логов, временные файлы, дебаг скрипты)
-2. Анализ структуры проекта (создание PROJECT_STRUCTURE.md)
-3. Создание реестра модулей (создание MODULE_REGISTRY.md)
-4. Создание LLM контекста (создание LLM_CONTEXT.md)
+This is a deprecated wrapper. Please use intellirefactor.orchestration.GlobalRefactoringOrchestrator directly.
 """
 
-import argparse
-import logging
-import sys
-import time
-from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
-from typing import List, Optional, Dict, Any
+import warnings
+from intellirefactor.orchestration.global_refactoring_orchestrator import *
 
-# Импорты компонентов рефакторинга
-try:
-    from core.refactoring.file_scanner import FileScanner
-    from core.refactoring.safe_remover import SafeRemover
-    from core.refactoring.structure_analyzer import ProjectStructureAnalyzer, StructureDocumenter
-    from core.refactoring.module_scanner import ModuleScanner
-    from core.refactoring.module_registry_builder import ModuleRegistryBuilder
-    from core.refactoring.module_categorizer import ModuleCategorizer
-    from core.refactoring.llm_context_generator import LLMContextGenerator
-except ImportError as e:
-    print(f"Ошибка импорта модулей рефакторинга: {e}")
-    print("Убедитесь что все модули рефакторинга созданы и доступны")
-    sys.exit(1)
+warnings.warn(
+    "global_refactoring_orchestrator.py is deprecated; use intellirefactor.orchestration.GlobalRefactoringOrchestrator",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 @dataclass

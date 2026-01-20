@@ -1,0 +1,96 @@
+{
+  "target_class": "AttackDispatcher",
+  "expected_components": 6,
+  "expected_extraction_rate": 0.85,
+  "component_mapping": {
+    "ExecutionOrchestrator": {
+      "description": "Основная оркестрация выполнения атак",
+      "methods": [
+        "dispatch_attack",
+        "_dispatch_internal",
+        "_dispatch_strategy",
+        "_dispatch_combination_wrapper",
+        "_dispatch_combination",
+        "_dispatch_integrated_combo",
+        "_dispatch_single_attack"
+      ],
+      "interface_methods": [
+        "dispatch_attack"
+      ],
+      "estimated_lines": 400
+    },
+    "StrategyResolver": {
+      "description": "Разрешение и парсинг стратегий",
+      "methods": [
+        "resolve_strategy",
+        "_resolve_smart_combo_strategy",
+        "_is_parameter_style_strategy",
+        "_resolve_parameter_strategy",
+        "_parse_standard_strategy",
+        "_parse_strategy_params",
+        "_resolve_attack_combinations",
+        "_is_strategy_string",
+        "_resolve_recipe_name"
+      ],
+      "interface_methods": [
+        "resolve_strategy"
+      ],
+      "estimated_lines": 350
+    },
+    "ParameterProcessor": {
+      "description": "Обработка и валидация параметров",
+      "methods": [
+        "_validate_critical_attacks",
+        "_filter_params_for_attack",
+        "_normalize_parameters",
+        "_normalize_attack_type",
+        "_map_recipe_parameters",
+        "validate_attack_parameters"
+      ],
+      "interface_methods": [
+        "validate_attack_parameters"
+      ],
+      "estimated_lines": 250
+    },
+    "ProtocolHandler": {
+      "description": "Обработка сетевых протоколов",
+      "methods": [
+        "_find_cipher_position",
+        "_parse_sni_extension",
+        "_find_hostname_offset_in_payload",
+        "_legacy_parse_sni_extension",
+        "_is_valid_hostname",
+        "_find_sni_position",
+        "_extract_domain_from_sni",
+        "_resolve_custom_sni"
+      ],
+      "interface_methods": [],
+      "estimated_lines": 300
+    },
+    "AttackExecutor": {
+      "description": "Выполнение атак и техник",
+      "methods": [
+        "_apply_disorder_reordering",
+        "_execute_primitive_attack",
+        "_create_attack_context",
+        "_use_advanced_attack",
+        "_find_midsld_position"
+      ],
+      "interface_methods": [],
+      "estimated_lines": 200
+    },
+    "OperationLogger": {
+      "description": "Логирование операций",
+      "methods": [
+        "_generate_correlation_id",
+        "_log_dispatch_start",
+        "_log_dispatch_success",
+        "_log_dispatch_error",
+        "_log_segment_details",
+        "_log_operations_for_validation"
+      ],
+      "interface_methods": [],
+      "estimated_lines": 150
+    }
+  }
+}

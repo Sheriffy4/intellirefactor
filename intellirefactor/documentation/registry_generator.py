@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
-from ..analysis.file_analyzer import FileAnalyzer
+from ..analysis.refactor.file_analyzer import FileAnalyzer
+from .ast_utils import extract_docstring
 
 
 @dataclass
@@ -572,9 +573,8 @@ Failed to generate registry: {str(e)}
 
     def _extract_docstring(self, node: ast.AST) -> Optional[str]:
         """Extract docstring from a node."""
-        # [IR_DELEGATED] Auto-generated wrapper (functional decomposition)
-        from intellirefactor.unified.documentation import extract_docstring as __ir_unified_extract_docstring
-        return __ir_unified_extract_docstring(self, node)
+        # Local implementation (unified module was removed/non-existent)
+        return extract_docstring(node)
 
     def _extract_class_attributes(self, node: ast.ClassDef) -> List[str]:
         """Extract class attributes."""
